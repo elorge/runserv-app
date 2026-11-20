@@ -1,0 +1,497 @@
+// admin-web/src/pages/Drivers/DriverApproval.tsx
+import React, { useEffect, useState } from 'react';
+import { driversAPI } from '@/services/api/drivers';
+import { Driver } from '@/types';
+import { Card, Button, Badge, Modal, Alert, Spinner } from '@/components/common';
+import {
+  FileText, Car, Shield, CheckCircle, XCircle, Eye,
+  Gift, AlertTriangle, Phone, Mail, Calendar,
+} from 'lucide-react';
+import { useAuthStore } from '@/store/authStore';
+import { formatDate } from '@/utils/helpers';
+import toast from 'react-hot-toast';
+import { CountryChips, CountryTag } from '@/components/CountryFilter';
+import { useSecureDoc } from '@/hooks/useSecureDoc';
+
+// ─── Vehicle-type-aware required document definitions ────────────────────────
+type DriverDocDef = { field: keyof Driver; label: string; icon: React.ReactNode };
+
+const DRIVER_DOC_DEFINITIONS: Record<string, DriverDocDef[]> = {
+  CAR: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'licenseImageUrl',         label: "Driver's Licence",           icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleRegUrl',           label: 'Vehicle Registration',       icon: <Car className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <Shield className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <Shield className="h-3 w-3" /> },
+    { field: 'vehicleInspectionUrl',    label: 'Vehicle Inspection Report',  icon: <Car className="h-3 w-3" /> },
+    { field: 'hackneyCertUrl',          label: 'Hackney / Commercial Permit',icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Car className="h-3 w-3" /> },
+  ],
+  MOTORCYCLE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'licenseImageUrl',         label: "Driver's Licence",           icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleRegUrl',           label: 'Vehicle Registration',       icon: <Car className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <Shield className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <Shield className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'riderCardUrl',            label: "Rider's Card / Union Card",  icon: <FileText className="h-3 w-3" /> },
+    { field: 'helmetPhotoUrl',          label: 'Helmet Photo',               icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+  BIKE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'licenseImageUrl',         label: "Driver's Licence",           icon: <FileText className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <Shield className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <Shield className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'dispatchPermitUrl',       label: 'Dispatch / Courier Permit',  icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+  TRICYCLE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'licenseImageUrl',         label: "Driver's Licence",           icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleRegUrl',           label: 'Vehicle Registration',       icon: <Car className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <Shield className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <Shield className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Car className="h-3 w-3" /> },
+    { field: 'operatorPermitUrl',       label: 'Tricycle Operator Permit',   icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+};
+DRIVER_DOC_DEFINITIONS.VAN = DRIVER_DOC_DEFINITIONS.CAR;
+
+export function getDriverDocDefs(vehicleType?: string): DriverDocDef[] {
+  return DRIVER_DOC_DEFINITIONS[vehicleType?.toUpperCase() ?? ''] ?? DRIVER_DOC_DEFINITIONS.CAR;
+}
+// ─── Document viewer sub-component ───────────────────────────────────────────
+const DocImage: React.FC<any> = ({ url, access, ...rest }) => {
+  const r = useSecureDoc(url, access);
+  if (r.loading) return <div className="text-xs text-gray-400 py-6">Opening secure document…</div>;
+  if (r.error) return <div className="text-xs text-red-600 py-6">{r.error}</div>;
+  return <DocImageInner url={r.url} {...rest} />;
+};
+const DocImageInner: React.FC<{ label: string; url?: string; icon: React.ReactNode }> = ({ label, url, icon }) => (
+  <div className="space-y-2">
+    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+      {icon}{label}
+    </p>
+    {url ? (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block group">
+        <div className="relative rounded-lg overflow-hidden border border-gray-200 bg-gray-50 aspect-video hover:border-primary-400 transition-colors">
+          {url.toLowerCase().endsWith('.pdf') ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 group-hover:text-primary-600">
+              <FileText className="h-10 w-10" />
+              <span className="text-xs font-medium">View PDF</span>
+            </div>
+          ) : (
+            <img
+              src={url}
+              alt={label}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+            <span className="opacity-0 group-hover:opacity-100 bg-white text-xs font-medium px-2 py-1 rounded shadow transition-opacity">
+              Open full size ↗
+            </span>
+          </div>
+        </div>
+      </a>
+    ) : (
+      <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 aspect-video flex flex-col items-center justify-center text-gray-400 gap-2">
+        <AlertTriangle className="h-6 w-6 text-amber-400" />
+        <span className="text-xs">Not uploaded yet</span>
+      </div>
+    )}
+  </div>
+);
+
+// ─── Licence review (M13) ─────────────────────────────────────────────────────
+// A licence number and a photo are not enough: a reviewer records the class and expiry they SEE on the licence and verifies it.
+const LicenceReview: React.FC<{ driver: Driver }> = ({ driver }) => {
+  const [status, setStatus] = useState(driver.licenseVerificationStatus ?? 'UNVERIFIED');
+  const [cls, setCls] = useState(driver.licenseClass ?? '');
+  const [exp, setExp] = useState(driver.licenseExpiresAt ? String(driver.licenseExpiresAt).slice(0, 10) : '');
+  const [reason, setReason] = useState('');
+  const [rejecting, setRejecting] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (action: 'VERIFY' | 'REJECT') => {
+    if (action === 'VERIFY' && (!cls.trim() || !exp)) { toast.error('Enter the licence class and expiry date shown on the licence'); return; }
+    if (action === 'REJECT' && !reason.trim()) { toast.error('A rejection reason is required'); return; }
+    setBusy(true);
+    try {
+      const r = await driversAPI.reviewLicence(driver.id, { action, licenseClass: cls.trim() || undefined, licenseExpiresAt: exp || undefined, reason: reason.trim() || undefined });
+      setStatus((r as any)?.data?.licence?.licenseVerificationStatus ?? (action === 'VERIFY' ? 'VERIFIED' : 'REJECTED'));
+      setRejecting(false);
+      toast.success(action === 'VERIFY' ? 'Licence verified' : 'Licence rejected');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Could not update the licence');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="p-3 rounded-lg border border-gray-200 bg-gray-50 space-y-2" data-testid="licence-review">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-gray-700">Driving licence verification</p>
+        <Badge variant={status === 'VERIFIED' ? 'success' : status === 'REJECTED' ? 'error' : 'warning'}>{status}</Badge>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-xs text-gray-600">Class on licence
+          <input value={cls} onChange={(e) => setCls(e.target.value.toUpperCase())} maxLength={4} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="e.g. B" />
+        </label>
+        <label className="text-xs text-gray-600">Expiry date
+          <input type="date" value={exp} onChange={(e) => setExp(e.target.value)} className="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+        </label>
+      </div>
+      {rejecting && <input value={reason} onChange={(e) => setReason(e.target.value)} className="w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Reason shown to the driver" />}
+      <div className="flex gap-2">
+        <Button size="sm" variant="success" disabled={busy} onClick={() => submit('VERIFY')}>Verify licence</Button>
+        {!rejecting
+          ? <Button size="sm" variant="outline" disabled={busy} onClick={() => setRejecting(true)}>Reject…</Button>
+          : <Button size="sm" variant="danger" disabled={busy} onClick={() => submit('REJECT')}>Confirm reject</Button>}
+      </div>
+      {status !== 'VERIFIED' && <p className="text-xs text-amber-700">Until verified, this driver cannot be approved or go online (when licence enforcement is on).</p>}
+    </div>
+  );
+};
+
+// ─── Approval modal ───────────────────────────────────────────────────────────
+interface ApprovalModalProps {
+  driver:       Driver;
+  isSuperAdmin: boolean;
+  onClose:      () => void;
+  onApproved:   () => void;
+}
+
+const ApprovalModal: React.FC<ApprovalModalProps> = ({ driver, isSuperAdmin, onClose, onApproved }) => {
+  const [grantBonus,   setGrantBonus]   = useState(false);
+  // Blank = use this country's configured onboarding bonus (in its own
+  // currency). It used to default to a hard-coded 5000 with a ₦ sign, which
+  // would have credited 5,000 CFA to a Mali driver.
+  const [bonusAmount,  setBonusAmount]  = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [showReject,   setShowReject]   = useState(false);
+  const [loading,      setLoading]      = useState(false);
+
+const docDefs = getDriverDocDefs(driver.vehicleType);
+  const uploadedCount = docDefs.filter(d => driver[d.field]).length;
+
+  const documentStatus = driver.documentStatus ?? (
+    uploadedCount === docDefs.length ? 'COMPLETE' :
+    uploadedCount > 0 ? 'PARTIAL' : 'NONE'
+  );
+
+  const docStatusVariant =
+    documentStatus === 'COMPLETE' ? 'success' :
+    documentStatus === 'PARTIAL'  ? 'warning' : 'error';
+
+  const docStatusLabel =
+    documentStatus === 'COMPLETE' ? `All ${docDefs.length} documents uploaded` :
+    documentStatus === 'PARTIAL'  ? `${uploadedCount}/${docDefs.length} documents uploaded` :
+    'No documents uploaded yet';
+
+  const handleApprove = async () => {
+    setLoading(true);
+    try {
+      await driversAPI.approveDriver(driver.id, {
+        grantBonus:  isSuperAdmin && grantBonus,
+        bonusAmount: isSuperAdmin && grantBonus && bonusAmount.trim() !== '' ? parseFloat(bonusAmount) : undefined,
+      });
+      toast.success(`${driver.user.firstName} approved${grantBonus ? ' + onboarding bonus sent' : ''}`);
+      onApproved();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to approve driver');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectReason.trim()) { toast.error('Please provide a rejection reason'); return; }
+    setLoading(true);
+    try {
+      await driversAPI.rejectDriver(driver.id, rejectReason);
+      toast.success('Driver rejected');
+      onApproved();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to reject driver');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Review — ${driver.user.firstName} ${driver.user.lastName}`}
+      size="xl"
+      footer={
+        showReject ? (
+          <>
+            <Button variant="outline" onClick={() => setShowReject(false)}>Cancel</Button>
+            <Button variant="danger" loading={loading} onClick={handleReject}>
+              <XCircle className="h-4 w-4" />Confirm Reject
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="danger" onClick={() => setShowReject(true)}>
+              <XCircle className="h-4 w-4" />Reject
+            </Button>
+            <Button variant="success" loading={loading} onClick={handleApprove}>
+              <CheckCircle className="h-4 w-4" />Approve Driver
+            </Button>
+          </>
+        )
+      }
+    >
+      <div className="space-y-6">
+        {/* Driver info summary */}
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="flex items-center gap-2 text-gray-600"><Mail className="h-4 w-4 text-gray-400" />{driver.user.email}</div>
+          <div className="flex items-center gap-2 text-gray-600"><Phone className="h-4 w-4 text-gray-400" />{driver.user.phone}</div>
+          <div className="flex items-center gap-2 text-gray-600"><Car className="h-4 w-4 text-gray-400" />{driver.vehicleMake} {driver.vehicleModel} ({driver.vehicleYear})</div>
+          <div className="flex items-center gap-2 text-gray-600"><Shield className="h-4 w-4 text-gray-400" />{driver.vehicleType} • {driver.vehiclePlate}</div>
+          <div className="flex items-center gap-2 text-gray-600"><FileText className="h-4 w-4 text-gray-400" />License: {driver.licenseNumber}</div>
+          <div className="flex items-center gap-2 text-gray-600"><Calendar className="h-4 w-4 text-gray-400" />Applied {formatDate(driver.createdAt)}</div>
+        </div>
+
+        <LicenceReview driver={driver} />
+
+        {/* Documents */}
+        <div>
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">Uploaded Documents</h4>
+
+          {/* ── Document status alerts ── */}
+          {documentStatus !== 'COMPLETE' && (
+            <Alert variant="warning" className="mb-3">
+              <div className="flex items-center justify-between">
+                <span>
+                  {documentStatus === 'NONE'
+                    ? 'This driver has not uploaded any documents yet.'
+                    : 'Some documents are still missing.'}
+                  {' '}You may still approve at your discretion.
+                </span>
+                <Badge variant={docStatusVariant} className="ml-3 flex-shrink-0">
+                  {docStatusLabel}
+                </Badge>
+              </div>
+            </Alert>
+          )}
+          {documentStatus === 'COMPLETE' && (
+            <Alert variant="success" className="mb-3">
+              All documents have been uploaded and are ready for review.
+            </Alert>
+          )}
+
+          <div className="grid grid-cols-3 gap-4">
+            {docDefs.map(({ field, label, icon }) => (
+              <DocImage key={field} label={label} url={driver[field] as string | undefined} icon={icon} access={{ source: 'DRIVER_PROFILE', id: (driver as any).id, field }} />
+            ))}
+          </div>
+        </div>
+
+        {/* Onboarding bonus — SUPER_ADMIN only */}
+        {isSuperAdmin && !showReject && (
+          <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 space-y-3">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={grantBonus}
+                onChange={e => setGrantBonus(e.target.checked)}
+                className="h-4 w-4 rounded text-primary-600"
+              />
+              <div>
+                <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                  <Gift className="h-4 w-4" />Grant Onboarding Bonus
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Funds are deposited to wallet but <strong>cannot be withdrawn</strong> — only used to accept rides.
+                </p>
+              </div>
+            </label>
+            {grantBonus && (
+              <div className="ml-7">
+                <input
+                  type="number"
+                  value={bonusAmount}
+                  onChange={e => setBonusAmount(e.target.value)}
+                  min="0"
+                  placeholder="Country default"
+                  className="w-44 px-3 py-2 rounded-lg border border-amber-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                />
+                <p className="text-[11px] text-amber-700 mt-1">
+                  Leave blank to use this country's onboarding bonus (set under Countries → Pricing &amp; rules).
+                  Any amount you type is in the person's own currency.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Rejection reason */}
+        {showReject && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Rejection Reason <span className="text-red-500">*</span></label>
+            <textarea
+              rows={3}
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Explain why this application is being rejected..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+            />
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+};
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+const DriverApproval: React.FC = () => {
+  const { user }     = useAuthStore();
+  // Super Admin or a country admin may grant the onboarding bonus.
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || (user?.role === 'ADMIN' && (user?.supportCountries?.length ?? 0) > 0);
+
+  const [drivers,        setDrivers]        = useState<Driver[]>([]);
+  const [loading,        setLoading]        = useState(true);
+  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
+
+  const [country,   setCountry]   = useState('');
+  const [byCountry, setByCountry] = useState<Record<string, number>>({});
+
+  useEffect(() => { loadPendingDrivers(); }, [country]);
+
+  const loadPendingDrivers = async () => {
+    setLoading(true);
+    try {
+      const res = await driversAPI.getPendingDrivers(country);
+      setDrivers(res.data.drivers);
+      setByCountry(res.data.byCountry || {});
+    } catch {
+      toast.error('Failed to load pending drivers');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Pending Driver Approvals</h1>
+          <p className="text-gray-500 text-sm mt-1">{drivers.length} application{drivers.length !== 1 ? 's' : ''} awaiting review</p>
+        </div>
+      </div>
+
+      <CountryChips counts={byCountry} value={country} onChange={setCountry} />
+
+      {loading ? (
+        <div className="flex justify-center py-16"><Spinner size="lg" showLabel /></div>
+      ) : drivers.length === 0 ? (
+        <Card>
+          <div className="py-12 text-center text-gray-400">
+            <CheckCircle className="h-10 w-10 mx-auto mb-3 text-green-400" />
+            <p className="font-medium text-gray-600">All caught up!</p>
+            <p className="text-sm mt-1">No pending driver applications.</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {drivers.map(driver => (
+            <Card key={driver.id} className="flex flex-col justify-between gap-4">
+              {/* Header */}
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                  {driver.user.firstName[0]}{driver.user.lastName[0]}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-semibold text-gray-900 truncate">
+                    {driver.user.firstName} {driver.user.lastName}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">{driver.user.email}</p>
+                  <CountryTag code={(driver.user as any).countryCode} className="mt-0.5" />
+                </div>
+              </div>
+
+              {/* Vehicle */}
+              <div className="text-sm space-y-1">
+                <div className="flex items-center gap-2 text-gray-600">
+                  <Car className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                  <span>{driver.vehicleMake} {driver.vehicleModel} ({driver.vehicleYear})</span>
+                </div>
+                <div className="flex items-center gap-2 text-gray-600">
+                  <Shield className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                  <span>{driver.vehicleType} • {driver.vehiclePlate}</span>
+                </div>
+              </div>
+
+              {/* Docs status */}
+              <div className="flex items-center gap-2">
+                {(() => {
+                  const defs = getDriverDocDefs(driver.vehicleType);
+                  const count = defs.filter(d => (driver as any)[d.field]).length;
+                  return (
+                    <Badge variant={
+                      (driver.documentStatus ?? 'NONE') === 'COMPLETE' ? 'success' :
+                      (driver.documentStatus ?? 'NONE') === 'PARTIAL'  ? 'warning' : 'error'
+                    }>
+                      {count}/{defs.length} docs
+                    </Badge>
+                  );
+                })()}
+                {driver.documentsUploadedAt && (
+                  <span className="text-xs text-gray-400">
+                    Uploaded {formatDate(driver.documentsUploadedAt)}
+                  </span>
+                )}
+                {!driver.documentsUploadedAt && (
+                  <span className="text-xs text-amber-500">No docs yet</span>
+                )}
+                <span className="text-xs text-gray-400">{formatDate(driver.createdAt)}</span>
+              </div>
+
+              {/* Actions */}
+              <Button
+                size="sm"
+                onClick={() => setSelectedDriver(driver)}
+                className="w-full"
+              >
+                <Eye className="h-4 w-4" />Review Application
+              </Button>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {selectedDriver && (
+        <ApprovalModal
+          driver={selectedDriver}
+          isSuperAdmin={isSuperAdmin}
+          onClose={() => setSelectedDriver(null)}
+          onApproved={() => { setSelectedDriver(null); loadPendingDrivers(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default DriverApproval;

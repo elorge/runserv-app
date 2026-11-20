@@ -1,0 +1,16 @@
+# Own OSRM routing server (Nigeria). NOT TESTED IN THIS SANDBOX: rehearse on staging first.
+# 1) ./prepare.sh   (downloads the OpenStreetMap extract and builds the routing graph; run once, repeat monthly)
+# 2) docker compose up -d
+# 3) Put TLS in front (Caddy/nginx/cloud load balancer) and set  OSRM_URL=https://routing.yourdomain.com  on the API server.
+services:
+  osrm:
+    image: osrm/osrm-backend:latest      # pin a specific version tag for production
+    restart: unless-stopped
+    command: osrm-routed --algorithm mld --max-table-size 1000 /data/nigeria-latest.osrm
+    volumes: ["./data:/data:ro"]
+    ports: ["127.0.0.1:5000:5000"]       # localhost only; expose through your TLS proxy, never directly
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- 'http://localhost:5000/route/v1/driving/3.3515,6.6018;3.4219,6.4281?overview=false' | grep -q Ok"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

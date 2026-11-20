@@ -1,0 +1,54 @@
+// admin-web/src/services/api/partners.ts
+import api from './index';
+import { ApiResponse, PaginatedResponse, DeliveryPartner } from '@/types';
+
+export const partnersAPI = {
+  /** GET /api/admin/partners — paginated, filterable */
+  getPartners: async (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    isApproved?: string;   // 'true' | 'false'
+    isRejected?: string;   // ← NEW: 'true' | 'false'
+    vehicleType?: string;
+    country?: string;      // ISO alpha-2, e.g. 'ML'
+  }): Promise<PaginatedResponse<DeliveryPartner>> => {
+    const response = await api.get('/admin/partners', { params });
+    return response.data;
+  },
+
+  /** GET /api/admin/partners/pending */
+  getPendingPartners: async (country?: string): Promise<ApiResponse<{ partners: DeliveryPartner[]; byCountry?: Record<string, number> }>> => {
+    const response = await api.get('/admin/partners/pending', { params: { country: country || undefined } });
+    return response.data;
+  },
+
+  /** GET /api/admin/partners/:id — full detail with recent deliveries */
+  getPartnerById: async (
+    id: string
+  ): Promise<ApiResponse<{ partner: DeliveryPartner; recentDeliveries: any[] }>> => {
+    const response = await api.get(`/admin/partners/${id}`);
+    return response.data;
+  },
+
+  /**
+   * PUT /api/admin/partners/:id/approve
+   * SUPER_ADMIN can optionally grant a non-withdrawable onboarding bonus.
+   */
+  approvePartner: async (
+    id: string,
+    options?: { grantBonus?: boolean; bonusAmount?: number; note?: string }
+  ): Promise<ApiResponse<{ partner: DeliveryPartner; bonusCredited: number; documentStatus: string }>> => {
+    const response = await api.put(`/admin/partners/${id}/approve`, options ?? {});
+    return response.data;
+  },
+
+  /** PUT /api/admin/partners/:id/reject */
+  rejectPartner: async (
+    id: string,
+    reason: string
+  ): Promise<ApiResponse<{ partnerProfileId: string; reason: string }>> => {
+    const response = await api.put(`/admin/partners/${id}/reject`, { reason });
+    return response.data;
+  },
+};

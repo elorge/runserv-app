@@ -1,0 +1,347 @@
+// admin-web/src/types/index.ts
+
+export type AdminDepartment = 'RIDES' | 'DELIVERIES' | 'SUPPORT' | null;
+
+export interface User {
+  id: string;
+  email: string;
+  phone: string;
+  firstName: string;
+  lastName: string;
+  role: 'CUSTOMER' | 'DRIVER' | 'DELIVERY_PARTNER' | 'ADMIN' | 'SUPER_ADMIN' | 'MODERATOR' | 'SUPPORT';
+  adminDepartment?: AdminDepartment;
+  /** Countries a staff member is limited to. Empty/absent = all countries. */
+  supportCountries?: string[];
+  supportLanguages?: string[];
+  profileImage?: string;
+  /** Set when this user is the representative of an organisation (company portal access). */
+  company?: { id: string; name: string; orgCode: string; status: string; memberRole: 'ORG_ADMIN' | 'HR' | 'FINANCE' | 'MANAGER'; permissions: Record<string, boolean> };
+  /** Set when this user belongs to a Fleet Partner account (fleet portal access). */
+  fleet?: import('./fleetPortal').FleetSession;
+  isActive: boolean;
+  isVerified: boolean;
+  isSuspended: boolean;
+  suspendedAt?: string;
+  suspendedBy?: string;
+  suspensionReason?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Driver {
+  id: string;
+  userId: string;
+  user: User;
+  licenseNumber: string;
+  licenseClass?: string | null;
+  licenseExpiresAt?: string | null;
+  licenseVerificationStatus?: 'UNVERIFIED' | 'VERIFIED' | 'REJECTED';
+  licenseRejectedReason?: string | null;
+  vehicleType: 'BIKE' | 'CAR' | 'MOTORCYCLE' | 'VAN';
+  vehicleMake: string;
+  vehicleModel: string;
+  vehicleYear: number;
+  vehicleColor: string;
+  vehiclePlate: string;
+  licenseImageUrl?: string;
+  vehicleRegUrl?: string;
+  insuranceUrl?: string;
+  // ── Extended KYC docs ──────────────────────────────────────
+  applicantPhotoUrl?: string;
+  govtIdUrl?: string;
+  proofOfAddressUrl?: string;
+  roadWorthinessUrl?: string;
+  vehicleInspectionUrl?: string;
+  hackneyCertUrl?: string;
+  vehiclePhotoExteriorUrl?: string;
+  vehiclePhotoInteriorUrl?: string;
+  riderCardUrl?: string;
+  helmetPhotoUrl?: string;
+  dispatchPermitUrl?: string;
+  guarantorLetterUrl?: string;
+  guarantorIdUrl?: string;
+  operatorPermitUrl?: string;
+  numberOfSeats?: number;       // ← new
+  vehicleSubType?: string;      // ← new
+  isApproved: boolean;
+  isOnline: boolean;
+  currentLat?: number;
+  currentLng?: number;
+  totalRides: number;
+  rating: number;
+  createdAt: string;
+  updatedAt: string;
+  // ── Approval / rejection ─────────────────────────────
+  isRejected?: boolean;
+  rejectionReason?: string;
+  rejectedAt?: string;
+  approvedAt?: string;
+  // ── Document status ──────────────────────────────────
+  documentStatus?: 'COMPLETE' | 'PARTIAL' | 'NONE';
+  documentsUploadedAt?: string;
+}
+
+export interface DeliveryPartner {
+  id: string;
+  userId: string;
+  user: User;
+  vehicleType: 'BIKE' | 'CAR' | 'MOTORCYCLE' | 'VAN' | 'TRICYCLE';
+  vehiclePlate?: string;
+  idImageUrl?: string;
+  vehicleImageUrl?: string;
+  documentsUploadedAt?: string;
+  // ── Extended KYC docs ──────────────────────────────────────
+  applicantPhotoUrl?: string;
+  govtIdUrl?: string;
+  proofOfAddressUrl?: string;
+  insuranceUrl?: string;
+  roadWorthinessUrl?: string;
+  vehiclePhotoExteriorUrl?: string;
+  vehiclePhotoInteriorUrl?: string;
+  dispatchPermitUrl?: string;
+  guarantorLetterUrl?: string;
+  guarantorIdUrl?: string;
+  riderCardUrl?: string;
+  helmetPhotoUrl?: string;
+  operatorPermitUrl?: string;
+  numberOfSeats?: number;       // ← new
+  vehicleSubType?: string;      // ← new
+
+  /** Derived by backend — 'COMPLETE' | 'PARTIAL' | 'NONE' */
+  documentStatus?: 'COMPLETE' | 'PARTIAL' | 'NONE';  // ← NEW
+
+  // ── Approval state ──────────────────────────────────────
+  isApproved: boolean;
+  approvedAt?: string;               // ← NEW
+  approvedBy?: string;               // ← NEW
+  isRejected: boolean;               // ← NEW (was missing entirely)
+  rejectedAt?: string;               // ← NEW
+  rejectedBy?: string;               // ← NEW
+  rejectionReason?: string;          // ← NEW
+
+  // ── Runtime ─────────────────────────────────────────────
+  isOnline: boolean;
+  currentLat?: number;
+  currentLng?: number;
+  totalDeliveries: number;
+  rating: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Ride {
+  id: string;
+  customerId: string;
+  driverId?: string;
+  customer: User;
+  driver?: User;
+  pickupAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  dropoffAddress: string;
+  dropoffLat: number;
+  dropoffLng: number;
+  status: 'REQUESTED' | 'ACCEPTED' | 'ARRIVED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  distance?: number;
+  duration?: number;
+  estimatedFare: number;
+  actualFare?: number;
+  requestedAt: string;
+  acceptedAt?: string;
+  arrivedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  notes?: string;
+  cancellationReason?: string;
+  promoCode?: string;
+  currency?: string;
+  payment?: Payment;
+  rating?: Rating;
+}
+
+export interface Delivery {
+  id: string;
+  customerId: string;
+  partnerId?: string;
+  customer: User;
+  partner?: User;
+  pickupAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  pickupContact: string;
+  dropoffAddress: string;
+  dropoffLat: number;
+  dropoffLng: number;
+  dropoffContact: string;
+  packageDescription: string;
+  packageWeight?: number;
+  packageValue?: number;
+  status: 'PENDING' | 'ASSIGNED' | 'PICKED_UP' | 'IN_TRANSIT' | 'DELIVERED' | 'CANCELLED';
+  distance?: number;
+  estimatedFee: number;
+  actualFee?: number;
+  deliveryImageUrl?: string;
+  recipientName?: string;
+  requestedAt: string;
+  assignedAt?: string;
+  pickedUpAt?: string;
+  inTransitAt?: string;
+  deliveredAt?: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  notes?: string;
+  currency?: string;
+  payment?: Payment;
+  rating?: Rating;
+}
+
+export interface Payment {
+  id: string;
+  userId: string;
+  user: User;
+  rideId?: string;
+  ride?: Ride;
+  deliveryId?: string;
+  delivery?: Delivery;
+  amount: number;
+  currency: string;
+  method: 'CASH' | 'CARD' | 'WALLET';
+  status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'REFUNDED';
+  transactionId?: string;
+  receiptUrl?: string;
+  platformFee?: number;
+  driverEarnings?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── Added for payments.ts ────────────────────────────────────────────────────
+export interface RefundRequest {
+  paymentId: string;
+  amount?: number;
+  reason: string;
+}
+
+export interface Rating {
+  id: string;
+  userId: string;
+  rideId?: string;
+  deliveryId?: string;
+  rating: number;
+  comment?: string;
+  createdAt: string;
+}
+
+export interface DashboardStats {
+  users: {
+    total:    number;
+    drivers:  number;
+    partners: number;
+    newToday?: number;
+  };
+  rides: {
+    total:  number;
+    active: number;
+  };
+  deliveries: {
+    total:  number;
+    active: number;
+  };
+  revenue: {
+    today:         number;
+    yesterday?:    number;
+    week:          number;
+    month:         number;
+    year:          number;
+    currency:      string;
+    revenueDelta?: number | null;
+    /** One row per currency — amounts in different currencies are never added together. */
+    byCurrency?: Array<{
+      currency: string; today: number; yesterday: number; week: number; month: number; year: number;
+      walletBalance?: number; delta?: number | null;
+    }>;
+    /** Revenue split by country (all-countries view only), since several countries can share one currency. */
+    byCountry?: Array<{ country: string; name: string; currency: string; today: number; month: number; year: number; walletBalance: number }>;
+  };
+  /** ISO code when the dashboard is scoped to one country, else null/undefined (all countries). */
+  country?: string | null;
+  wallet: {
+    totalBalance: number;
+    currency?: string;
+    byCurrency?: Array<{ currency: string; balance: number }>;
+  };
+  pending: {
+    drivers:  number;
+    partners: number;
+  };
+  // ← NEW
+  incomplete: {
+    drivers:  number;
+    partners: number;
+  };
+  suspended: {
+    driversCount:  number;
+    partnersCount: number;
+    driversList: Array<{
+      id: string; firstName: string; lastName: string;
+      email: string; phone: string;
+      suspendedAt?: string; suspensionReason?: string;
+    }>;
+    partnersList: Array<{
+      id: string; firstName: string; lastName: string;
+      email: string; phone: string;
+      suspendedAt?: string; suspensionReason?: string;
+    }>;
+  };
+  support: {
+    openTickets: number;
+  };
+  deltas?: {
+    revenue: number | null;
+    users:   number | null;
+  };
+}
+
+export interface RevenueAnalytics {
+  totalRevenue: number;
+  platformFee: number;
+  netRevenue: number;
+  transactionCount: number;
+  dailyRevenue: Array<{
+    date: string; total: number; rides: number; deliveries: number; count: number;
+  }>;
+  byMethod: Record<string, number>;
+  period: string;
+  currency: string;
+  country?: string;
+  countryName?: string;
+}
+
+export interface UserGrowth {
+  growth: Array<{
+    month: string; customers: number; drivers: number; partners: number; total: number;
+  }>;
+  totalUsers: number;
+  period: string;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+}
+
+export interface PaginatedResponse<T> {
+  success: boolean;
+  data: {
+    [key: string]: T[] | any;
+    pagination: { total: number; page: number; pages: number };
+  };
+}
+
+export interface AuthState {
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+}

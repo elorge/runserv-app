@@ -1,0 +1,69 @@
+// admin-web/src/services/api/drivers.ts
+import api from './index';
+import { ApiResponse, PaginatedResponse, Driver } from '@/types';
+
+export const driversAPI = {
+  /** GET /api/admin/drivers — paginated, filterable */
+  getDrivers: async (params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    isApproved?: string;   // 'true' | 'false'
+    isRejected?: string;   // ← new: 'true' | 'false'
+    vehicleType?: string;
+    country?: string;      // ISO alpha-2, e.g. 'ML'
+  }): Promise<PaginatedResponse<Driver>> => {
+    const response = await api.get('/admin/drivers', { params });
+    return response.data;
+  },
+
+  /** GET /api/admin/drivers/pending */
+  getPendingDrivers: async (country?: string): Promise<ApiResponse<{ drivers: Driver[]; byCountry?: Record<string, number> }>> => {
+    const response = await api.get('/admin/drivers/pending', { params: { country: country || undefined } });
+    return response.data;
+  },
+
+  /** GET /api/admin/drivers/:id — full detail with recent rides */
+  getDriverById: async (
+    id: string
+  ): Promise<ApiResponse<{ driver: Driver; recentRides: any[] }>> => {
+    const response = await api.get(`/admin/drivers/${id}`);
+    return response.data;
+  },
+
+  /**
+   * PUT /api/admin/drivers/:id/approve
+   * SUPER_ADMIN can optionally grant a non-withdrawable onboarding bonus.
+   */
+  approveDriver: async (
+    id: string,
+    options?: { grantBonus?: boolean; bonusAmount?: number; note?: string }
+  ): Promise<ApiResponse<{ driver: Driver; bonusCredited: number; documentStatus: string }>> => {
+    const response = await api.put(`/admin/drivers/${id}/approve`, options ?? {});
+    return response.data;
+  },
+
+  /**
+   * PUT /api/admin/drivers/:id/reject
+   * reason is REQUIRED by the backend.
+   */
+  rejectDriver: async (
+    id: string,
+    reason: string
+  ): Promise<ApiResponse<{ driverProfileId: string; reason: string }>> => {
+    const response = await api.put(`/admin/drivers/${id}/reject`, { reason });
+    return response.data;
+  },
+
+  /**
+   * PUT /api/admin/drivers/:id/licence  (M13)
+   * VERIFY records the class + expiry the reviewer SAW on the licence; REJECT needs a reason. Audited server-side.
+   */
+  reviewLicence: async (
+    id: string,
+    body: { action: 'VERIFY' | 'REJECT'; licenseClass?: string; licenseExpiresAt?: string; reason?: string }
+  ): Promise<ApiResponse<{ licence: { licenseClass: string | null; licenseExpiresAt: string | null; licenseVerificationStatus: string; licenseRejectedReason: string | null } }>> => {
+    const response = await api.put(`/admin/drivers/${id}/licence`, body);
+    return response.data;
+  },
+};

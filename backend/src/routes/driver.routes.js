@@ -1,0 +1,161 @@
+// backend/src/routes/driver.routes.js
+// Mounted at /api/drivers in app.js / server.js.
+
+const express = require('express');
+const { body, query } = require('express-validator');
+const { authenticate, authorize } = require('../middleware/auth.middleware');
+const ctrl = require('../controllers/driver.controller');
+
+const { isStoredDocumentRef } = require('../utils/trustedFileUrl');
+const { isCategoryEnabled } = require('../utils/vehicleCategories');
+const router = express.Router();
+
+router.use(authenticate);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROFILE
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.post(
+  '/profile',
+  authorize('DRIVER'),
+  [
+    body('licenseNumber').notEmpty(),
+    body('vehicleType').isIn(['BIKE', 'CAR', 'MOTORCYCLE', 'VAN', 'TRICYCLE']).bail().custom((v) => isCategoryEnabled(v)).withMessage('That vehicle category is not available yet.'),
+    body('licenseClass').optional({ nullable: true, checkFalsy: true }).matches(/^[A-Za-z0-9]{1,4}$/).withMessage('Invalid licence class'),
+    body('licenseExpiresAt').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('licenseExpiresAt must be a date'),
+    body('vehicleMake').notEmpty(),
+    body('vehicleModel').notEmpty(),
+    body('vehicleYear').isInt({ min: 1990, max: new Date().getFullYear() + 1 }),
+    body('vehicleColor').notEmpty(),
+    body('vehiclePlate').notEmpty(),
+    body('licenseImageUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('licenseImageUrl must be a file uploaded through Runserv'),
+    body('vehicleRegUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('vehicleRegUrl must be a file uploaded through Runserv'),
+    body('insuranceUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('insuranceUrl must be a file uploaded through Runserv'),
+  ],
+  ctrl.createOrUpdateProfile
+);
+
+/** GET /api/drivers/profile — current driver's profile + user fields */
+router.get('/profile', authorize('DRIVER'), ctrl.getProfile);
+
+/**
+ * POST /api/drivers/documents
+ * Upload / refresh document URLs without touching vehicle data.
+ */
+router.post(
+  '/documents',
+  authorize('DRIVER'),
+  [
+    body('licenseImageUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('licenseImageUrl must be a file uploaded through Runserv'),
+    body('vehicleRegUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('vehicleRegUrl must be a file uploaded through Runserv'),
+    body('insuranceUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('insuranceUrl must be a file uploaded through Runserv'),
+  ],
+  ctrl.uploadDocuments
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ONLINE / LOCATION STATUS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PUT /api/drivers/status
+ * Toggle online/offline. Requires GPS coordinates when going online.
+ * Rejects going offline while an active ride exists.
+ */
+router.put(
+  '/status',
+  authorize('DRIVER'),
+  [
+    body('isOnline').isBoolean(),
+    body('currentLat').optional().isFloat({ min: -90, max: 90 }),
+    body('currentLng').optional().isFloat({ min: -180, max: 180 }),
+  ],
+  ctrl.updateStatus
+);
+
+/** GET /api/drivers/dispatch-status — structured reasons the driver cannot take jobs (fleet / vehicle / documents / approval). */
+router.get('/dispatch-status', authorize('DRIVER'), ctrl.getDispatchStatus);
+
+/** GET / PUT /api/drivers/location-consent — agree to (or stop) live-location sharing. Required before going online. */
+const locationConsent = require('../controllers/locationConsent.controller');
+router.get('/location-consent', authorize('DRIVER'), locationConsent.driver.get);
+router.put('/location-consent', authorize('DRIVER'), locationConsent.driver.put);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EARNINGS & STATS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/drivers/earnings?period=today|week|month|all
+ * Returns net earnings using the stored payment.driverEarnings field
+ * (which already accounts for the booking-fee deduction before commission).
+ * Also returns wallet balance and per-ride breakdown.
+ */
+router.get(
+  '/earnings',
+  authorize('DRIVER'),
+  [
+    query('period').optional().isIn(['today', 'week', 'month', 'all']),
+    query('startDate').optional().isISO8601(),
+    query('endDate').optional().isISO8601(),
+  ],
+  ctrl.getEarnings
+);
+
+/** GET /api/drivers/stats — totals, ratings, acceptance rate */
+router.get('/stats', authorize('DRIVER'), ctrl.getStats);
+
+/**
+ * GET /api/drivers/nearby-requests
+ * Returns open REQUESTED rides near the driver's current location.
+ * Driver must be online with a stored location.
+ */
+router.get('/nearby-requests', authorize('DRIVER'), ctrl.getNearbyRequests);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAYOUTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/drivers/payout/request
+ * Verify bank account → create Paystack recipient → initiate transfer.
+ * Minimum payout ₦1,000. Deducts withdrawable wallet balance only
+ * (non-withdrawable onboarding bonus is excluded).
+ */
+router.post(
+  '/payout/request',
+  authorize('DRIVER'),
+  [
+    // The real minimum is applied in the controller using the driver's own
+    // currency — a naira-shaped floor is meaningless in XOF or GNF.
+    body('amount').isFloat({ min: 1 }).withMessage('Amount is required'),
+    // Destination fields are validated per-rail in the controller, which
+    // knows the requester's country: bank markets need a 10-digit NUBAN,
+    // Orange markets need an Orange Money MSISDN. Enforcing "10 digits"
+    // here would reject every Orange payout before it reached that logic.
+    body('accountNumber').optional().isString(),
+    body('bankCode').optional().isString(),
+    body('mobileNumber').optional().isString(),
+    body('accountName').optional().isString(),
+  ],
+  ctrl.requestPayout
+);
+
+/**
+ * GET /api/drivers/payout/history?status=PENDING|COMPLETED|FAILED
+ */
+router.get(
+  '/payout/history',
+  authorize('DRIVER'),
+  [query('status').optional().isIn(['PENDING', 'COMPLETED', 'FAILED'])],
+  ctrl.getPayoutHistory
+);
+
+router.put('/floor-price',
+     authorize('DRIVER'),
+     [body('floorMultiplier').isFloat({ min: 1.0, max: 2.0 })],
+     ctrl.setFloorMultiplier
+);
+
+module.exports = router;

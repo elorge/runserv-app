@@ -1,0 +1,442 @@
+// admin-web/src/pages/Partners/PartnerApproval.tsx
+import React, { useEffect, useState } from 'react';
+import { partnersAPI } from '@/services/api/partners';
+import { DeliveryPartner } from '@/types';
+import { Card, Button, Badge, Modal, Alert, Spinner } from '@/components/common';
+import {
+  FileText, Truck, CheckCircle, XCircle, Eye,
+  Gift, AlertTriangle, Phone, Mail, Calendar,
+} from 'lucide-react';
+import { useAuthStore } from '@/store/authStore';
+import { formatDate } from '@/utils/helpers';
+import toast from 'react-hot-toast';
+import { CountryChips, CountryTag } from '@/components/CountryFilter';
+import { useSecureDoc } from '@/hooks/useSecureDoc';
+
+// ─── Vehicle-type-aware required document definitions ────────────────────────
+type PartnerDocDef = { field: keyof DeliveryPartner; label: string; icon: React.ReactNode };
+
+const PARTNER_DOC_DEFINITIONS: Record<string, PartnerDocDef[]> = {
+  CAR: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'idImageUrl',              label: 'ID Image',                   icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleImageUrl',         label: 'Vehicle Image',              icon: <Truck className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <FileText className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Truck className="h-3 w-3" /> },
+  ],
+  MOTORCYCLE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'idImageUrl',              label: 'ID Image',                   icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleImageUrl',         label: 'Vehicle Image',              icon: <Truck className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <FileText className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'riderCardUrl',            label: "Rider's Card / Union Card",  icon: <FileText className="h-3 w-3" /> },
+    { field: 'helmetPhotoUrl',          label: 'Helmet Photo',               icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+  BIKE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'idImageUrl',              label: 'ID Image',                   icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleImageUrl',         label: 'Vehicle Image',              icon: <Truck className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <FileText className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'dispatchPermitUrl',       label: 'Dispatch / Courier Permit',  icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+  TRICYCLE: [
+    { field: 'applicantPhotoUrl',       label: 'Applicant Photo',            icon: <FileText className="h-3 w-3" /> },
+    { field: 'govtIdUrl',               label: 'Government ID',              icon: <FileText className="h-3 w-3" /> },
+    { field: 'proofOfAddressUrl',       label: 'Proof of Address',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'idImageUrl',              label: 'ID Image',                   icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehicleImageUrl',         label: 'Vehicle Image',              icon: <Truck className="h-3 w-3" /> },
+    { field: 'insuranceUrl',            label: 'Insurance Certificate',      icon: <FileText className="h-3 w-3" /> },
+    { field: 'roadWorthinessUrl',       label: 'Road Worthiness Cert',       icon: <FileText className="h-3 w-3" /> },
+    { field: 'vehiclePhotoExteriorUrl', label: 'Vehicle Photo (Exterior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'vehiclePhotoInteriorUrl', label: 'Vehicle Photo (Interior)',   icon: <Truck className="h-3 w-3" /> },
+    { field: 'operatorPermitUrl',       label: 'Tricycle Operator Permit',   icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorLetterUrl',      label: 'Guarantor Letter',           icon: <FileText className="h-3 w-3" /> },
+    { field: 'guarantorIdUrl',          label: "Guarantor's ID",             icon: <FileText className="h-3 w-3" /> },
+  ],
+};
+PARTNER_DOC_DEFINITIONS.VAN = PARTNER_DOC_DEFINITIONS.CAR;
+
+export function getPartnerDocDefs(vehicleType?: string): PartnerDocDef[] {
+  return PARTNER_DOC_DEFINITIONS[vehicleType?.toUpperCase() ?? ''] ?? PARTNER_DOC_DEFINITIONS.CAR;
+}
+// ─── Document viewer ──────────────────────────────────────────────────────────
+const DocImage: React.FC<any> = ({ url, access, ...rest }) => {
+  const r = useSecureDoc(url, access);
+  if (r.loading) return <div className="text-xs text-gray-400 py-6">Opening secure document…</div>;
+  if (r.error) return <div className="text-xs text-red-600 py-6">{r.error}</div>;
+  return <DocImageInner url={r.url} {...rest} />;
+};
+const DocImageInner: React.FC<{ label: string; url?: string; icon: React.ReactNode }> = ({ label, url, icon }) => (
+  <div className="space-y-2">
+    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+      {icon}{label}
+    </p>
+    {url ? (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block group">
+        <div className="relative rounded-lg overflow-hidden border border-gray-200 bg-gray-50 aspect-video hover:border-primary-400 transition-colors">
+          {url.toLowerCase().endsWith('.pdf') ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-gray-500 group-hover:text-primary-600">
+              <FileText className="h-10 w-10" />
+              <span className="text-xs font-medium">View PDF</span>
+            </div>
+          ) : (
+            <img src={url} alt={label}
+              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+          )}
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+            <span className="opacity-0 group-hover:opacity-100 bg-white text-xs font-medium px-2 py-1 rounded shadow transition-opacity">
+              Open full size ↗
+            </span>
+          </div>
+        </div>
+      </a>
+    ) : (
+      <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 aspect-video flex flex-col items-center justify-center text-gray-400 gap-2">
+        <AlertTriangle className="h-6 w-6 text-amber-400" />
+        <span className="text-xs">Not uploaded yet</span>
+      </div>
+    )}
+  </div>
+);
+
+// ─── Approval modal ───────────────────────────────────────────────────────────
+interface ApprovalModalProps {
+  partner:      DeliveryPartner;
+  isSuperAdmin: boolean;
+  onClose:      () => void;
+  onApproved:   () => void;
+}
+
+const ApprovalModal: React.FC<ApprovalModalProps> = ({ partner, isSuperAdmin, onClose, onApproved }) => {
+  const [grantBonus,   setGrantBonus]   = useState(false);
+  // Blank = use this country's configured onboarding bonus (in its own
+  // currency). It used to default to a hard-coded 5000 with a ₦ sign, which
+  // would have credited 5,000 CFA to a Mali driver.
+  const [bonusAmount,  setBonusAmount]  = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [showReject,   setShowReject]   = useState(false);
+  const [loading,      setLoading]      = useState(false);
+
+  // Use backend-derived documentStatus when available, fall back to field check
+  const docDefs = getPartnerDocDefs(partner.vehicleType);
+  const uploadedCount = docDefs.filter(d => partner[d.field]).length;
+
+  const documentStatus = partner.documentStatus ?? (
+    uploadedCount === docDefs.length ? 'COMPLETE' :
+    uploadedCount > 0 ? 'PARTIAL' : 'NONE'
+  );
+
+  const docStatusVariant: 'success' | 'warning' | 'error' =
+    documentStatus === 'COMPLETE' ? 'success' :
+    documentStatus === 'PARTIAL'  ? 'warning' : 'error';
+
+  const docStatusLabel =
+    documentStatus === 'COMPLETE' ? `All ${docDefs.length} documents uploaded` :
+    documentStatus === 'PARTIAL'  ? `${uploadedCount}/${docDefs.length} documents uploaded` :
+    'No documents uploaded yet';
+
+  const handleApprove = async () => {
+    setLoading(true);
+    try {
+      await partnersAPI.approvePartner(partner.id, {
+        grantBonus:  isSuperAdmin && grantBonus,
+        bonusAmount: isSuperAdmin && grantBonus && bonusAmount.trim() !== '' ? parseFloat(bonusAmount) : undefined,
+      });
+      toast.success(
+        `${partner.user.firstName} approved${grantBonus ? ' + onboarding bonus sent' : ''}`
+      );
+      onApproved();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to approve partner');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectReason.trim()) { toast.error('Please provide a rejection reason'); return; }
+    setLoading(true);
+    try {
+      await partnersAPI.rejectPartner(partner.id, rejectReason);
+      toast.success('Partner rejected');
+      onApproved();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to reject partner');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={`Review — ${partner.user.firstName} ${partner.user.lastName}`}
+      size="xl"
+      footer={
+        showReject ? (
+          <>
+            <Button variant="outline" onClick={() => setShowReject(false)}>Cancel</Button>
+            <Button variant="danger" loading={loading} onClick={handleReject}>
+              <XCircle className="h-4 w-4" />Confirm Reject
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="danger" onClick={() => setShowReject(true)}>
+              <XCircle className="h-4 w-4" />Reject
+            </Button>
+            <Button variant="success" loading={loading} onClick={handleApprove}>
+              <CheckCircle className="h-4 w-4" />Approve Partner
+            </Button>
+          </>
+        )
+      }
+    >
+      <div className="space-y-6">
+        {/* Info summary */}
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="flex items-center gap-2 text-gray-600"><Mail className="h-4 w-4 text-gray-400" />{partner.user.email}</div>
+          <div className="flex items-center gap-2 text-gray-600"><Phone className="h-4 w-4 text-gray-400" />{partner.user.phone}</div>
+          <div className="flex items-center gap-2 text-gray-600">
+            <Truck className="h-4 w-4 text-gray-400" />
+            {partner.vehicleType}{partner.vehiclePlate ? ` • ${partner.vehiclePlate}` : ''}
+          </div>
+          <div className="flex items-center gap-2 text-gray-600">
+            <Calendar className="h-4 w-4 text-gray-400" />Applied {formatDate(partner.createdAt)}
+          </div>
+        </div>
+
+        {/* Documents */}
+        <div>
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">Uploaded Documents</h4>
+
+          {documentStatus !== 'COMPLETE' && (
+            <Alert variant="warning" className="mb-3">
+              <div className="flex items-center justify-between">
+                <span>
+                  {documentStatus === 'NONE'
+                    ? 'This partner has not uploaded any documents yet.'
+                    : 'Some documents are still missing.'}
+                  {' '}You may still approve at your discretion.
+                </span>
+                <Badge variant={docStatusVariant} className="ml-3 flex-shrink-0">
+                  {docStatusLabel}
+                </Badge>
+              </div>
+            </Alert>
+          )}
+          {documentStatus === 'COMPLETE' && (
+            <Alert variant="success" className="mb-3">
+              Both documents have been uploaded and are ready for review.
+            </Alert>
+          )}
+
+          <div className="grid grid-cols-3 gap-4">
+            {docDefs.map(({ field, label, icon }) => (
+              <DocImage key={field} label={label} url={partner[field] as string | undefined} icon={icon} access={{ source: 'DELIVERY_PROFILE', id: (partner as any).id, field }} />
+            ))}
+          </div>
+        </div>
+
+        {/* Onboarding bonus — SUPER_ADMIN only */}
+        {isSuperAdmin && !showReject && (
+          <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 space-y-3">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={grantBonus}
+                onChange={e => setGrantBonus(e.target.checked)}
+                className="h-4 w-4 rounded text-primary-600"
+              />
+              <div>
+                <p className="text-sm font-semibold text-amber-800 flex items-center gap-1.5">
+                  <Gift className="h-4 w-4" />Grant Onboarding Bonus
+                </p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  Funds deposited to wallet but <strong>cannot be withdrawn</strong> — only used to accept deliveries.
+                </p>
+              </div>
+            </label>
+            {grantBonus && (
+              <div className="ml-7">
+                <input
+                  type="number"
+                  value={bonusAmount}
+                  onChange={e => setBonusAmount(e.target.value)}
+                  min="0"
+                  placeholder="Country default"
+                  className="w-44 px-3 py-2 rounded-lg border border-amber-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
+                />
+                <p className="text-[11px] text-amber-700 mt-1">
+                  Leave blank to use this country's onboarding bonus (set under Countries → Pricing &amp; rules).
+                  Any amount you type is in the person's own currency.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Rejection reason */}
+        {showReject && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Rejection Reason <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              rows={3}
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Explain why this application is being rejected..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+            />
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+};
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+const PartnerApproval: React.FC = () => {
+  const { user }     = useAuthStore();
+  // Super Admin or a country admin may grant the onboarding bonus.
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN' || (user?.role === 'ADMIN' && (user?.supportCountries?.length ?? 0) > 0);
+
+  const [partners,        setPartners]        = useState<DeliveryPartner[]>([]);
+  const [loading,         setLoading]         = useState(true);
+  const [selectedPartner, setSelectedPartner] = useState<DeliveryPartner | null>(null);
+
+  const [country,   setCountry]   = useState('');
+  const [byCountry, setByCountry] = useState<Record<string, number>>({});
+
+  useEffect(() => { loadPendingPartners(); }, [country]);
+
+  const loadPendingPartners = async () => {
+    setLoading(true);
+    try {
+      const res = await partnersAPI.getPendingPartners(country);
+      setPartners(res.data.partners);
+      setByCountry(res.data.byCountry || {});
+    } catch {
+      toast.error('Failed to load pending partners');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Pending Partner Approvals</h1>
+          <p className="text-gray-500 text-sm mt-1">
+            {partners.length} application{partners.length !== 1 ? 's' : ''} awaiting review
+          </p>
+        </div>
+      </div>
+
+      <CountryChips counts={byCountry} value={country} onChange={setCountry} />
+
+      {loading ? (
+        <div className="flex justify-center py-16"><Spinner size="lg" showLabel /></div>
+      ) : partners.length === 0 ? (
+        <Card>
+          <div className="py-12 text-center text-gray-400">
+            <CheckCircle className="h-10 w-10 mx-auto mb-3 text-green-400" />
+            <p className="font-medium text-gray-600">All caught up!</p>
+            <p className="text-sm mt-1">No pending partner applications.</p>
+          </div>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {partners.map(partner => (
+            <Card key={partner.id} className="flex flex-col justify-between gap-4">
+              {/* Header */}
+              <div className="flex items-start gap-3">
+                <div className="w-11 h-11 rounded-full bg-warning-100 text-warning-700 flex items-center justify-center font-semibold text-sm flex-shrink-0">
+                  {partner.user.firstName[0]}{partner.user.lastName[0]}
+                </div>
+                <div className="min-w-0">
+                  <p className="font-semibold text-gray-900 truncate">
+                    {partner.user.firstName} {partner.user.lastName}
+                  </p>
+                  <p className="text-xs text-gray-500 truncate">{partner.user.email}</p>
+                  <CountryTag code={(partner.user as any).countryCode} className="mt-0.5" />
+                </div>
+              </div>
+
+              {/* Vehicle */}
+              <div className="text-sm">
+                <div className="flex items-center gap-2 text-gray-600">
+                  <Truck className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                  <span>{partner.vehicleType}{partner.vehiclePlate ? ` • ${partner.vehiclePlate}` : ''}</span>
+                </div>
+              </div>
+
+              {/* Doc status */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {(() => {
+                  const defs = getPartnerDocDefs(partner.vehicleType);
+                  const count = defs.filter(d => (partner as any)[d.field]).length;
+                  return (
+                    <Badge variant={
+                      (partner.documentStatus ?? 'NONE') === 'COMPLETE' ? 'success' :
+                      (partner.documentStatus ?? 'NONE') === 'PARTIAL'  ? 'warning' : 'error'
+                    }>
+                      {count}/{defs.length} docs
+                    </Badge>
+                  );
+                })()}
+                {partner.documentsUploadedAt ? (
+                  <span className="text-xs text-gray-400">
+                    Uploaded {formatDate(partner.documentsUploadedAt)}
+                  </span>
+                ) : (
+                  <span className="text-xs text-amber-500">No docs yet</span>
+                )}
+                <span className="text-xs text-gray-400">{formatDate(partner.createdAt)}</span>
+              </div>
+
+              {/* CTA */}
+              <Button size="sm" onClick={() => setSelectedPartner(partner)} className="w-full">
+                <Eye className="h-4 w-4" />Review Application
+              </Button>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {selectedPartner && (
+        <ApprovalModal
+          partner={selectedPartner}
+          isSuperAdmin={isSuperAdmin}
+          onClose={() => setSelectedPartner(null)}
+          onApproved={() => { setSelectedPartner(null); loadPendingPartners(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default PartnerApproval;

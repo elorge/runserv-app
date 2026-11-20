@@ -1,0 +1,1025 @@
+// backend/src/controllers/auth.controller.js
+'use strict';
+const prisma = require('../lib/prisma');
+const { normalizePhoneForStorage } = require('../utils/phone');
+const bcrypt = require('bcryptjs');
+const jwt    = require('jsonwebtoken');
+const crypto = require('crypto');
+const { validationResult } = require('express-validator');
+const { AppError }         = require('../middleware/errorHandler');
+const notificationService  = require('../services/notification.service');
+const otpService           = require('../services/otp.service');
+const emailService         = require('../services/email.service');
+const { logActivity }      = require('../utils/auditLog'); // ← ADDED
+const { ensureWallet }     = require('../utils/walletHelpers');
+const { OAuth2Client }     = require('google-auth-library');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// `mfa` marks a token issued AFTER the authenticator step; staff sessions that passed it last 12 hours, not a week.
+const generateToken = (userId, { mfa = false } = {}) =>
+  jwt.sign(mfa ? { userId, mfa: true } : { userId }, process.env.JWT_SECRET, {
+    expiresIn: mfa ? (process.env.STAFF_JWT_EXPIRES_IN || '12h') : (process.env.JWT_EXPIRES_IN || '7d'),
+  });
+exports.generateToken = generateToken;
+
+// ─── admin login audit logging ─── ADDED ───────────────────────────────────────
+// Admin-tier roles worth tracking logins/login-failures for.
+const ADMIN_TIER_ROLES = ['ADMIN', 'SUPER_ADMIN', 'SUPPORT', 'MODERATOR'];
+
+const logAdminLogin = (user, req, via = 'password') => {
+  if (!ADMIN_TIER_ROLES.includes(user.role)) return;
+  logActivity({
+    userId:     user.id,
+    action:     'admin_login',
+    entityType: 'User',
+    entityId:   user.id,
+    details:    { role: user.role, via },
+    req,
+  });
+};
+
+const logAdminLoginFailed = (user, req, reason) => {
+  if (!ADMIN_TIER_ROLES.includes(user.role)) return;
+  logActivity({
+    userId:     user.id,
+    action:     'admin_login_failed',
+    entityType: 'User',
+    entityId:   user.id,
+    details:    { role: user.role, reason },
+    req,
+  });
+};
+// ─── END ADDED ──────────────────────────────────────────────────────────────────
+
+// Fields returned to the client after a successful auth event
+const AUTH_USER_SELECT = {
+  id: true, email: true, phone: true,
+  firstName: true, lastName: true,
+  role: true, profileImage: true,
+  isVerified: true, createdAt: true,
+  twoFactorEnabled: true, twoFactorMethod: true,
+  // The admin panel needs these to limit itself to a country-limited admin's markets.
+  adminDepartment: true, supportCountries: true, supportLanguages: true, countryCode: true,
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Register
+// ─────────────────────────────────────────────────────────────────────────────
+exports.register = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { email, phone: rawPhone, password, firstName, lastName, role, countryCode } = req.body;
+
+  // Nigeria is the default market (older app versions send no country). Anywhere
+  // else, the country must exist AND be live: new markets start paused until an
+  // admin has reviewed their pricing, and a client must not be able to register
+  // into one by sending its code directly.
+  const regCountry = String(countryCode || 'NG').toUpperCase();
+  if (regCountry !== 'NG') {
+    const country = await prisma.country.findUnique({ where: { code: regCountry }, select: { isActive: true } });
+    if (!country || !country.isActive) {
+      throw new AppError('Registration is not available in that country yet.', 400);
+    }
+  }
+  // Mali/Senegal/… numbers are stored as clean E.164 (+22376427484); Nigerian
+  // numbers keep the exact form they were entered in, as before.
+  const phone = normalizePhoneForStorage(rawPhone, regCountry);
+
+  const existingUser = await prisma.user.findFirst({
+    where: { OR: [{ email }, { phone }] },
+  });
+  if (existingUser) throw new AppError('User with this email or phone already exists', 400);
+
+  const hashedPassword    = await bcrypt.hash(password, 10);
+  const verifyToken       = crypto.randomBytes(32).toString('hex');
+  const hashedVerifyToken = crypto.createHash('sha256').update(verifyToken).digest('hex');
+
+  const user = await prisma.user.create({
+    data: {
+      email, phone, password: hashedPassword,
+      firstName, lastName, role,
+      countryCode:        regCountry,
+      emailVerifyToken:   hashedVerifyToken,
+      emailVerifyExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+    select: AUTH_USER_SELECT,
+  });
+
+  await notificationService.notify({
+    userId:  user.id,
+    title:   'Welcome to Runserv! 🎉',
+    message: `Hi ${firstName}, your account has been created successfully.`,
+    type:    notificationService.TYPES.ACCOUNT_WELCOME,
+    data:    { role },
+  });
+
+  // ── Email verification gate (ENABLE_EMAIL_VERIFICATION=true) ──────────────
+  // When true: send a verification link and — if REQUIRE_EMAIL_VERIFICATION is
+  // also true — do not issue a JWT until the link is clicked.
+  // Set both to true in .env once your SMTP provider is configured.
+  if (process.env.ENABLE_EMAIL_VERIFICATION === 'true') {
+    try {
+      await emailService.sendVerificationEmail(user.email, firstName, verifyToken);
+    } catch (mailErr) {
+      console.error('[auth] Verification email failed to send:', mailErr.message);
+      // Non-fatal — account is created; user can request a resend.
+    }
+
+    return res.status(201).json({
+      success:              true,
+      message:              'Registration successful. Please check your email to verify your account before logging in.',
+      requiresVerification: true,
+      data:                 { email: user.email },
+    });
+  }
+
+  // ── OTP registration gate (ENABLE_REGISTRATION_OTP=true) ──────────────────
+  // When enabled: don't issue a JWT yet — send an OTP and require verification
+  // before the account is usable. Flip to true in .env when ready.
+  if (process.env.ENABLE_REGISTRATION_OTP === 'true' &&
+      process.env.ENABLE_OTP_DELIVERY    === 'true') {
+    const method = process.env.OTP_DEFAULT_METHOD || 'SMS';
+    const { code, tempToken } = await otpService.createOtp(user.id, 'REGISTER');
+    await otpService.sendOtp(user, code, method);
+
+    const maskedContact = method === 'EMAIL'
+      ? otpService.maskEmail(user.email)
+      : otpService.maskPhone(user.phone);
+
+    return res.status(201).json({
+      success:     true,
+      message:     'Registration successful. Please verify your account.',
+      requiresOtp: true,
+      data:        { tempToken, method, maskedContact },
+    });
+  }
+
+// ── Default: issue token immediately (all gates disabled) ─────────────────
+  await ensureWallet(user.id, countryCode || 'NG');
+
+  const token = generateToken(user.id);
+
+  res.status(201).json({
+    success: true,
+    message: 'Registration successful.',
+    data:    { user, token },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Login  (2FA-aware)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.login = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { email, phone, password } = req.body;
+  if (!email && !phone) throw new AppError('Please provide email or phone number', 400);
+
+  const user = await prisma.user.findFirst({
+    where: email ? { email } : { phone },
+  });
+
+  if (!user) throw new AppError('Invalid credentials', 401);
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+  if (!isPasswordValid) {
+    logAdminLoginFailed(user, req, 'invalid_password'); // ← ADDED
+    throw new AppError('Invalid credentials', 401);
+  }
+
+  if (!user.isActive)   throw new AppError('Account is deactivated. Contact support.', 403);
+  if (user.isDeleted) throw new AppError('This account no longer exists.', 403);
+  if (user.isSuspended) throw new AppError(`Account suspended: ${user.suspensionReason || 'Contact support'}`, 403);
+
+  // ── Email verification gate ────────────────────────────────────────────────
+  // Block login only when BOTH flags are true so you can enable email sending
+  // first (ENABLE_EMAIL_VERIFICATION=true) and test delivery before flipping
+  // REQUIRE_EMAIL_VERIFICATION=true to actually enforce it.
+  if (process.env.ENABLE_EMAIL_VERIFICATION  === 'true' &&
+      process.env.REQUIRE_EMAIL_VERIFICATION === 'true' &&
+      !user.isVerified) {
+    throw new AppError(
+      'Please verify your email before logging in. Check your inbox or request a new verification link.',
+      403
+    );
+  }
+
+  // ── 2FA gate (ENABLE_2FA=true AND user has it switched on) ─────────────────
+  // Set ENABLE_2FA=true in .env when your SMS/Email provider is live.
+  if (process.env.ENABLE_2FA === 'true' && user.twoFactorEnabled) {
+    const method = user.twoFactorMethod || process.env.OTP_DEFAULT_METHOD || 'SMS';
+    const { code, tempToken } = await otpService.createOtp(user.id, 'LOGIN');
+    await otpService.sendOtp(user, code, method);
+
+    const maskedContact = method === 'EMAIL'
+      ? otpService.maskEmail(user.email)
+      : otpService.maskPhone(user.phone);
+
+    return res.status(200).json({
+      success:     true,
+      requiresOtp: true,
+      data:        { tempToken, method, maskedContact },
+    });
+  }
+
+  // ── No gates — issue token immediately ────────────────────────────────────
+  const token = generateToken(user.id);
+  const { password: _, emailVerifyToken: __, passwordResetToken: ___, ...safeUser } = user;
+
+  logAdminLogin(user, req, 'password'); // ← ADDED
+
+  // For staff this token is only good for the two-step routes until /auth/mfa/verify (or /enable) returns one that passed.
+  const staff = ADMIN_TIER_ROLES.includes(user.role);
+  res.status(200).json({
+    success: true,
+    message: 'Login successful',
+    data:    { user: safeUser, token },
+    ...(staff && { mfaRequired: true, mfaEnrolled: !!user.mfaEnabled }),
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verify OTP  (completes a 2FA-gated login)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.verifyOtp = async (req, res) => {
+  const { code, tempToken } = req.body;
+
+  if (!code || !tempToken)
+    throw new AppError('Code and session token are required', 400);
+
+  const result = await otpService.verifyOtp(tempToken, String(code));
+  if (!result.valid) throw new AppError(result.reason, 400);
+
+  const user = await prisma.user.findUnique({
+    where:  { id: result.userId },
+    select: AUTH_USER_SELECT,
+  });
+
+  if (!user)           throw new AppError('User not found', 404);
+  if (!user.isActive)  throw new AppError('Account is deactivated.', 403);
+
+  const token = generateToken(user.id);
+
+  logAdminLogin(user, req, 'otp'); // ← ADDED
+
+  res.status(200).json({
+    success: true,
+    message: 'Login successful',
+    data:    { user, token },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resend OTP  (within a 2FA-gated login session)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.resendOtp = async (req, res) => {
+  const { tempToken } = req.body;
+  if (!tempToken) throw new AppError('Session token is required', 400);
+
+  const record = await prisma.otpVerification.findUnique({ where: { tempToken } });
+  if (!record) throw new AppError('Session expired. Please log in again.', 400);
+  if (new Date() > record.expiresAt) throw new AppError('Session expired. Please log in again.', 400);
+
+  const user = await prisma.user.findUnique({ where: { id: record.userId } });
+  if (!user) throw new AppError('User not found', 404);
+
+  const method = user.twoFactorMethod || process.env.OTP_DEFAULT_METHOD || 'SMS';
+  const { code, tempToken: newTempToken } = await otpService.createOtp(user.id, record.purpose);
+  await otpService.sendOtp(user, code, method);
+
+  const maskedContact = method === 'EMAIL'
+    ? otpService.maskEmail(user.email)
+    : otpService.maskPhone(user.phone);
+
+  res.status(200).json({
+    success: true,
+    message: 'A new code has been sent.',
+    data:    { tempToken: newTempToken, method, maskedContact },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Setup 2FA  (step 1 — sends OTP to verify ownership before enabling)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.setupTwoFactor = async (req, res) => {
+  const { method = 'SMS' } = req.body;
+  if (!['SMS', 'EMAIL'].includes(method))
+    throw new AppError('Method must be SMS or EMAIL', 400);
+
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (user.twoFactorEnabled) throw new AppError('2FA is already enabled', 400);
+
+  const { code, tempToken } = await otpService.createOtp(user.id, 'SETUP_2FA');
+  await otpService.sendOtp(user, code, method);
+
+  const maskedContact = method === 'EMAIL'
+    ? otpService.maskEmail(user.email)
+    : otpService.maskPhone(user.phone);
+
+  res.status(200).json({
+    success: true,
+    message: `Verification code sent to ${maskedContact}.`,
+    data:    { tempToken, method, maskedContact },
+  });
+};
+
+exports.enableTwoFactor = async (req, res) => {
+  const { method = 'EMAIL' } = req.body;
+  if (!['EMAIL'].includes(method))
+    throw new AppError('Only email 2FA is currently supported', 400);
+
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (user.twoFactorEnabled) throw new AppError('2FA is already enabled', 400);
+
+  await prisma.user.update({
+    where: { id: req.user.id },
+    data:  { twoFactorEnabled: true, twoFactorMethod: method },
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   '🔐 Two-Factor Authentication enabled',
+    message: `2FA is now active via ${method}. You'll be asked for a code each time you sign in.`,
+    type:    'SECURITY_CHANGE',
+    data:    {},
+  });
+
+  res.status(200).json({ success: true, message: 'Two-factor authentication enabled.' });
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Confirm 2FA setup  (step 2 — verify OTP and enable 2FA)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.confirmSetupTwoFactor = async (req, res) => {
+  const { code, tempToken, method = 'SMS' } = req.body;
+  if (!code || !tempToken) throw new AppError('Code and session token are required', 400);
+
+  const result = await otpService.verifyOtp(tempToken, String(code));
+  if (!result.valid) throw new AppError(result.reason, 400);
+
+  if (result.userId !== req.user.id)
+    throw new AppError('Session mismatch', 403);
+
+  await prisma.user.update({
+    where: { id: req.user.id },
+    data:  { twoFactorEnabled: true, twoFactorMethod: method },
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   '🔐 Two-Factor Authentication enabled',
+    message: `2FA is now active on your account via ${method}. You'll be asked for a code each time you sign in.`,
+    type:    'SECURITY_CHANGE',
+    data:    {},
+  });
+
+  res.status(200).json({ success: true, message: '2FA enabled successfully.' });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Disable 2FA  (requires current password for safety)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.disableTwoFactor = async (req, res) => {
+  const { password } = req.body;
+  if (!password) throw new AppError('Password is required to disable 2FA', 400);
+
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user.twoFactorEnabled) throw new AppError('2FA is not enabled', 400);
+
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) throw new AppError('Incorrect password', 401);
+
+  await prisma.user.update({
+    where: { id: req.user.id },
+    data:  { twoFactorEnabled: false, twoFactorMethod: null },
+  });
+
+  // ← ADDED — disabling 2FA is a classic account-takeover precursor step,
+  // worth a distinct high-severity trail entry regardless of role.
+  logActivity({
+    userId:     req.user.id,
+    action:     '2fa_disabled',
+    entityType: 'User',
+    entityId:   req.user.id,
+    details:    { role: req.user.role },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   '⚠️ Two-Factor Authentication disabled',
+    message: 'If you did not do this, please contact support immediately.',
+    type:    'SECURITY_CHANGE',
+    data:    {},
+  });
+
+  res.status(200).json({ success: true, message: '2FA disabled successfully.' });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Get current user
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getCurrentUser = async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where:  { id: req.user.id },
+    select: {
+      ...AUTH_USER_SELECT,
+      wallet: { select: { balance: true, currency: true } },
+    },
+  });
+  res.status(200).json({ success: true, data: { user } });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Refresh token
+// ─────────────────────────────────────────────────────────────────────────────
+exports.refreshToken = async (req, res) => {
+  const token = generateToken(req.user.id, { mfa: !!req.tokenMfa });
+  res.status(200).json({ success: true, data: { token } });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Logout
+// ─────────────────────────────────────────────────────────────────────────────
+exports.logout = async (req, res) => {
+  // TODO: add token to Redis blacklist when available
+  res.status(200).json({ success: true, message: 'Logged out successfully' });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Forgot password
+// ─────────────────────────────────────────────────────────────────────────────
+exports.forgotPassword = async (req, res) => {
+  const { email } = req.body;
+  if (!email) throw new AppError('Email is required', 400);
+ 
+  // Always respond with the same message to prevent email enumeration.
+  const SAFE_RESPONSE = {
+    success: true,
+    message: 'If that email exists, a reset link has been sent.',
+  };
+ 
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) return res.status(200).json(SAFE_RESPONSE);
+ 
+  const resetToken  = crypto.randomBytes(32).toString('hex');
+  const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+ 
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      passwordResetToken:   hashedToken,
+      passwordResetExpires: new Date(Date.now() + 10 * 60 * 1000), // 10 min
+    },
+  });
+ 
+  // ── Send reset email ───────────────────────────────────────────────────────
+  try {
+    await emailService.sendPasswordResetEmail(user.email, user.firstName, resetToken);
+  } catch (mailErr) {
+    console.error('[auth] Password reset email failed:', mailErr.message);
+    // Roll back the token so the user can retry cleanly
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordResetToken: null, passwordResetExpires: null },
+    }).catch(() => {});
+    throw new AppError(
+      'Could not send the reset email. Please try again later or contact support.',
+      500
+    );
+  }
+ 
+  // ── In-app notification (belt-and-suspenders) ──────────────────────────────
+  await notificationService.notify({
+    userId:  user.id,
+    title:   'Password Reset Requested',
+    message: "A password reset link has been sent to your email. If this wasn't you, contact support immediately.",
+    type:    notificationService.TYPES.PASSWORD_RESET,
+    data:    {},
+  }).catch(() => {}); // non-fatal
+ 
+  res.status(200).json({
+    ...SAFE_RESPONSE,
+    ...(process.env.NODE_ENV === 'development' && { resetToken }),
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reset password — GET: HTML form  |  POST: process new password
+// Add GET /auth/reset-password/:token to your auth.routes.js pointing here.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getResetPasswordForm = async (req, res) => {
+  const { token } = req.params;
+  const safeToken = token.replace(/[^a-f0-9]/gi, '');
+  const hashedToken = crypto.createHash('sha256').update(safeToken).digest('hex');
+  const user = await prisma.user.findFirst({
+    where: {
+      passwordResetToken:   hashedToken,
+      passwordResetExpires: { gt: new Date() },
+    },
+  });
+
+  if (!user) {
+    return res.status(400).send(`
+      <!DOCTYPE html><html><head><meta charset="utf-8"/>
+      <title>Link Expired — Runserv</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1"/>
+      </head>
+      <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;
+                   display:flex;align-items:center;justify-content:center;min-height:100vh;
+                   margin:0;background:#0B0B0F;color:#fff">
+        <div style="text-align:center;max-width:400px;padding:40px">
+          <div style="font-size:56px;margin-bottom:16px">⏱️</div>
+          <h1 style="font-weight:900;font-size:24px;margin-bottom:8px;letter-spacing:-0.5px">Link expired</h1>
+          <p style="color:rgba(255,255,255,0.55);line-height:1.7;font-weight:300">
+            This password reset link is invalid or has expired (links are valid for 10 minutes).<br/><br/>
+            Open the Runserv app and request a new reset link.
+          </p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  // Valid token — render the password reset form (Onyx glass theme)
+  res.status(200).send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8"/>
+      <meta name="viewport" content="width=device-width,initial-scale=1"/>
+      <title>Reset Password — Runserv</title>
+      <style>
+        * { box-sizing: border-box; }
+        body {
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+          display: flex; align-items: center; justify-content: center;
+          min-height: 100vh; margin: 0; padding: 20px;
+          background: #0B0B0F;
+          background-image:
+            radial-gradient(circle at 15% -10%, rgba(83,74,183,0.12), transparent 55%),
+            radial-gradient(circle at 90% 110%, rgba(255,255,255,0.02), transparent 50%);
+        }
+        .card {
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.10);
+          backdrop-filter: blur(20px);
+          border-radius: 22px; padding: 40px 32px;
+          max-width: 420px; width: 100%;
+          box-shadow: 0 4px 40px rgba(0,0,0,0.4);
+        }
+        .pill {
+          display: inline-flex; align-items: center; gap: 6px;
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+          border-radius: 20px; padding: 5px 10px; margin-bottom: 14px;
+        }
+        .pill-dot { width: 5px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.6); }
+        .eyebrow { font-size: 9px; letter-spacing: 3.5px; font-weight: 800; color: rgba(255,255,255,0.55); }
+        h1 { font-size: 26px; font-weight: 900; margin: 0 0 6px; color: #fff; letter-spacing: -0.5px; }
+        p  { color: rgba(255,255,255,0.55); line-height: 1.7; margin: 0 0 28px; font-size: 14px; font-weight: 300; }
+        label { display: block; font-size: 10px; font-weight: 800; letter-spacing: 0.5px;
+                color: rgba(255,255,255,0.5); margin-bottom: 6px; text-transform: uppercase; }
+        input[type=password] {
+          width: 100%; padding: 14px 16px;
+          background: rgba(255,255,255,0.04);
+          border: 1.5px solid rgba(255,255,255,0.10);
+          color: #fff;
+          border-radius: 13px; font-size: 15px; outline: none;
+          transition: border-color 0.2s;
+          margin-bottom: 14px;
+        }
+        input[type=password]::placeholder { color: rgba(255,255,255,0.25); }
+        input[type=password]:focus { border-color: rgba(255,255,255,0.28); }
+        button {
+          width: 100%; background: linear-gradient(135deg, #fff, #ddd);
+          color: #111; border: none;
+          padding: 15px; border-radius: 14px; font-size: 14px;
+          font-weight: 800; letter-spacing: 0.3px; cursor: pointer;
+          transition: opacity 0.15s;
+        }
+        button:hover { opacity: 0.88; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .error {
+          display: flex; align-items: center; gap: 8px;
+          background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25);
+          color: #F87171; font-size: 13px; font-weight: 500;
+          border-radius: 10px; padding: 9px 12px; margin-bottom: 12px;
+        }
+        .success { text-align: center; padding: 20px 0; }
+        .success .icon { font-size: 52px; margin-bottom: 12px; }
+        .strength { height: 4px; border-radius: 2px; margin: -8px 0 14px; transition: all 0.3s; background: rgba(255,255,255,0.1); }
+        .hint { font-size: 11px; color: rgba(255,255,255,0.35); margin: -10px 0 14px; font-weight: 500; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="pill"><span class="pill-dot"></span><span class="eyebrow">ACCOUNT SECURITY</span></div>
+
+        <div id="formWrap">
+          <h1>New password</h1>
+          <p>Choose a strong password for your Runserv account. Minimum 8 characters.</p>
+
+          <div id="errorMsg" class="error" style="display:none"></div>
+          <label for="pw">New password</label>
+          <input type="password" id="pw" placeholder="Enter new password" />
+          <div id="strengthBar" class="strength"></div>
+          <p class="hint" id="strengthHint"></p>
+          <label for="pw2">Confirm password</label>
+          <input type="password" id="pw2" placeholder="Confirm new password" />
+          <button id="submitBtn">Reset Password</button>
+        </div>
+
+        <div id="successWrap" class="success" style="display:none">
+          <div class="icon">✅</div>
+          <h1 style="font-size:22px">Password updated!</h1>
+          <p style="margin-bottom:0">Your Runserv password has been changed.<br/>Open the app and sign in with your new password.</p>
+        </div>
+      </div>
+
+      <script nonce="${res.locals.cspNonce}">
+        const TOKEN = '${safeToken}';
+
+        function checkStrength() {
+          const pw  = document.getElementById('pw').value;
+          const bar = document.getElementById('strengthBar');
+          const hint = document.getElementById('strengthHint');
+          let score = 0;
+          if (pw.length >= 8)          score++;
+          if (pw.length >= 12)         score++;
+          if (/[A-Z]/.test(pw))        score++;
+          if (/[0-9]/.test(pw))        score++;
+          if (/[^A-Za-z0-9]/.test(pw)) score++;
+          const map = [
+            { color: 'rgba(255,255,255,0.1)', label: '' },
+            { color: '#ef4444', label: 'Weak'   },
+            { color: '#f97316', label: 'Fair'   },
+            { color: '#eab308', label: 'Good'   },
+            { color: '#22c55e', label: 'Strong' },
+            { color: '#16a34a', label: 'Very strong' },
+          ];
+          bar.style.background = map[score].color;
+          bar.style.width = (score / 5 * 100) + '%';
+          hint.textContent = map[score].label;
+          hint.style.color  = map[score].color;
+        }
+
+        async function submitReset() {
+          const pw   = document.getElementById('pw').value;
+          const pw2  = document.getElementById('pw2').value;
+          const btn  = document.getElementById('submitBtn');
+          const err  = document.getElementById('errorMsg');
+
+          err.style.display = 'none';
+
+          if (pw.length < 8) {
+            err.textContent = 'Password must be at least 8 characters.';
+            err.style.display = 'block';
+            return;
+          }
+          if (pw !== pw2) {
+            err.textContent = 'Passwords do not match.';
+            err.style.display = 'block';
+            return;
+          }
+
+          btn.disabled    = true;
+          btn.textContent = 'Saving…';
+
+          try {
+            const res = await fetch('/api/auth/reset-password/' + TOKEN, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body:    JSON.stringify({ password: pw }),
+            });
+            const data = await res.json();
+
+            if (!res.ok || !data.success) {
+              err.textContent = data.message || 'Something went wrong. Please try again.';
+              err.style.display = 'block';
+              btn.disabled    = false;
+              btn.textContent = 'Reset Password';
+              return;
+            }
+
+            document.getElementById('formWrap').style.display    = 'none';
+            document.getElementById('successWrap').style.display = 'block';
+          } catch {
+            err.textContent = 'Network error. Please check your connection and try again.';
+            err.style.display = 'block';
+            btn.disabled    = false;
+            btn.textContent = 'Reset Password';
+          }
+        }
+
+        document.getElementById('pw').addEventListener('input', checkStrength);
+        document.getElementById('submitBtn').addEventListener('click', submitReset);
+      </script>
+    </body>
+    </html>
+  `);
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// Reset password  (POST — processes the form or an API call)
+// Unchanged from original — keeping here for reference.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.resetPassword = async (req, res) => {
+  const { token }    = req.params;
+  const { password } = req.body;
+ 
+  if (!password || password.length < 8)
+    throw new AppError('Password must be at least 8 characters', 400);
+ 
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+ 
+  const user = await prisma.user.findFirst({
+    where: {
+      passwordResetToken:   hashedToken,
+      passwordResetExpires: { gt: new Date() },
+    },
+  });
+  if (!user) throw new AppError('Invalid or expired reset token', 400);
+ 
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      password:             await bcrypt.hash(password, 10),
+      passwordResetToken:   null,
+      passwordResetExpires: null,
+      passwordChangedAt:    new Date(),
+    },
+  });
+
+  // ← ADDED — a completed password reset is worth a trail entry: if this
+  // wasn't the account owner, it means their email was compromised too.
+  logActivity({
+    userId:     user.id,
+    action:     'password_reset_completed',
+    entityType: 'User',
+    entityId:   user.id,
+    details:    { role: user.role, via: 'email_token' },
+    req,
+  });
+ 
+  await notificationService.notify({
+    userId:  user.id,
+    title:   'Password Changed 🔑',
+    message: 'Your password has been changed successfully. If you did not do this, contact support immediately.',
+    type:    notificationService.TYPES.PASSWORD_RESET,
+    data:    {},
+  }).catch(() => {});
+ 
+  res.status(200).json({ success: true, message: 'Password reset successfully. Please login.' });
+};
+ 
+// ─────────────────────────────────────────────────────────────────────────────
+// Verify email  (GET /auth/verify-email/:token)
+// Called when the user clicks the link in their inbox.
+// Returns a user-friendly HTML page when accessed from a browser,
+// or JSON when called from an API client.
+// ─────────────────────────────────────────────────────────────────────────────
+exports.verifyEmail = async (req, res) => {
+  const { token } = req.params;
+  const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
+  const user = await prisma.user.findFirst({
+    where: {
+      emailVerifyToken:   hashedToken,
+      emailVerifyExpires: { gt: new Date() },
+    },
+  });
+
+  if (!user) {
+    // Return a readable HTML error when opened in a browser
+    if (req.headers.accept?.includes('text/html')) {
+      return res.status(400).send(`
+        <!DOCTYPE html><html><head><meta charset="utf-8"/>
+        <title>Link Expired — Runserv</title></head>
+        <body style="font-family:Arial,sans-serif;display:flex;align-items:center;
+                     justify-content:center;min-height:100vh;margin:0;background:#f9f9f9">
+          <div style="text-align:center;max-width:400px;padding:40px">
+            <div style="font-size:56px;margin-bottom:16px">⚠️</div>
+            <h1 style="font-weight:900;font-size:24px;margin-bottom:8px">Link expired</h1>
+            <p style="color:#666;line-height:1.7">
+              This verification link is invalid or has expired.<br/>
+              Open the app and request a new verification email.
+            </p>
+          </div>
+        </body></html>
+      `);
+    }
+    throw new AppError('Invalid or expired verification token', 400);
+  }
+
+ await prisma.user.update({
+    where: { id: user.id },
+    data:  { isVerified: true, emailVerifyToken: null, emailVerifyExpires: null },
+  });
+
+  await ensureWallet(user.id, user);
+
+  await notificationService.notify({
+    userId:  user.id,
+    title:   'Email Verified ✅',
+    message: 'Your email address has been verified successfully.',
+    type:    notificationService.TYPES.ACCOUNT_VERIFIED,
+    data:    {},
+  });
+
+  // HTML response for browser clicks
+  if (req.headers.accept?.includes('text/html')) {
+    return res.status(200).send(`
+      <!DOCTYPE html><html><head><meta charset="utf-8"/>
+      <title>Email Verified — Runserv</title></head>
+      <body style="font-family:Arial,sans-serif;display:flex;align-items:center;
+                   justify-content:center;min-height:100vh;margin:0;background:#f9f9f9">
+        <div style="text-align:center;max-width:400px;padding:40px">
+          <div style="font-size:56px;margin-bottom:16px">✅</div>
+          <h1 style="font-weight:900;font-size:26px;margin-bottom:8px">You're verified!</h1>
+          <p style="color:#666;line-height:1.7">
+            Your Runserv account is now active.<br/>
+            Open the app and sign in to get started.
+          </p>
+        </div>
+      </body></html>
+    `);
+  }
+
+  res.status(200).json({ success: true, message: 'Email verified successfully.' });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resend email verification
+// Requires the user to be authenticated (they logged in despite unverified,
+// e.g. when REQUIRE_EMAIL_VERIFICATION=false, or are on the pending screen).
+// ─────────────────────────────────────────────────────────────────────────────
+exports.resendVerification = async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (user.isVerified) throw new AppError('Email is already verified', 400);
+
+  const verifyToken       = crypto.randomBytes(32).toString('hex');
+  const hashedVerifyToken = crypto.createHash('sha256').update(verifyToken).digest('hex');
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      emailVerifyToken:   hashedVerifyToken,
+      emailVerifyExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  });
+
+  try {
+    await emailService.sendVerificationEmail(user.email, user.firstName, verifyToken);
+  } catch (mailErr) {
+    console.error('[auth] Resend verification email failed:', mailErr.message);
+    throw new AppError('Could not send verification email. Please try again later.', 500);
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Verification email sent. Please check your inbox.',
+    ...(process.env.NODE_ENV === 'development' && { verifyToken }),
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Resend verification by email (unauthenticated — for blocked users)
+// ─────────────────────────────────────────────────────────────────────────────
+exports.resendVerificationByEmail = async (req, res) => {
+  const { email } = req.body;
+
+  const SAFE_RESPONSE = {
+    success: true,
+    message: 'If that email exists and is unverified, a new link has been sent.',
+  };
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user || user.isVerified) return res.status(200).json(SAFE_RESPONSE);
+
+  const verifyToken       = crypto.randomBytes(32).toString('hex');
+  const hashedVerifyToken = crypto.createHash('sha256').update(verifyToken).digest('hex');
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      emailVerifyToken:   hashedVerifyToken,
+      emailVerifyExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  });
+
+  try {
+    await emailService.sendVerificationEmail(user.email, user.firstName, verifyToken);
+  } catch (mailErr) {
+    console.error('[auth] Resend verification email failed:', mailErr.message);
+    throw new AppError('Could not send verification email. Please try again later.', 500);
+  }
+
+  res.status(200).json({
+    ...SAFE_RESPONSE,
+    ...(process.env.NODE_ENV === 'development' && { verifyToken }),
+  });
+};
+
+module.exports = exports;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sign in / sign up with Google (customers). The Google ID token is verified server-side against
+// our own client IDs (web + iOS + Android); only Google-verified emails are accepted.
+// ─────────────────────────────────────────────────────────────────────────────
+const googleClient = new OAuth2Client();
+const googleAudiences = () => String(process.env.GOOGLE_CLIENT_IDS || process.env.GOOGLE_CLIENT_ID || '').split(',').map((x) => x.trim()).filter(Boolean);
+
+exports.googleAuth = async (req, res) => {
+  const { idToken } = req.body;
+  const audience = googleAudiences();
+  if (!audience.length) throw new AppError('Google sign-in is not configured on the server.', 503);
+
+  let payload;
+  try { payload = (await googleClient.verifyIdToken({ idToken, audience })).getPayload(); }
+  catch { throw new AppError('Google sign-in failed. Please try again.', 401); }
+  if (!payload?.email || !payload.email_verified) throw new AppError('Your Google email is not verified.', 400);
+
+  const email = payload.email.toLowerCase();
+  let user = await prisma.user.findFirst({ where: { OR: [{ googleId: payload.sub }, { email }] } });
+  let isNew = false;
+
+  if (user) {
+    if (user.role !== 'CUSTOMER' || user.twoFactorEnabled) throw new AppError('Please sign in with your email and password.', 403);
+    if (!user.isActive || user.isSuspended) throw new AppError('Account is deactivated.', 403);
+    const data = {};
+    if (!user.googleId) {
+      data.googleId = payload.sub;
+      // If this email was only ever typed into a password sign-up (never verified), Google now proves
+      // ownership — and whoever knew that password must not keep access.
+      if (!user.isVerified) data.password = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
+      data.isVerified = true;
+      if (user.authProvider === 'PASSWORD' && !user.isVerified) data.authProvider = 'GOOGLE';
+    }
+    if (!user.profileImage && payload.picture) data.profileImage = payload.picture;
+    if (Object.keys(data).length) user = await prisma.user.update({ where: { id: user.id }, data });
+  } else {
+    isNew = true;
+    user = await prisma.user.create({
+      data: {
+        email, phone: null, googleId: payload.sub, authProvider: 'GOOGLE', isVerified: true,
+        password: await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10),
+        firstName: payload.given_name || (payload.name || 'Runserv').split(' ')[0], lastName: payload.family_name || (payload.name || '').split(' ').slice(1).join(' ') || '-',
+        role: 'CUSTOMER', profileImage: payload.picture || null,
+      },
+    });
+    await ensureWallet(user.id, user);
+  }
+
+  const safe = await prisma.user.findUnique({ where: { id: user.id }, select: AUTH_USER_SELECT });
+  res.status(200).json({ success: true, message: 'Login successful', data: { user: safe, token: generateToken(user.id), isNew, needsPhone: !safe.phone } });
+};
+
+// Add / change the phone number: send a code to it, then confirm the code.
+exports.requestPhoneVerification = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, message: errors.array()[0].msg, errors: errors.array() });
+  const country = String(req.body.countryCode || req.user.countryCode || 'NG').toUpperCase();
+  const phone = normalizePhoneForStorage(req.body.phone, country);
+  const taken = await prisma.user.findFirst({ where: { phone, id: { not: req.user.id } }, select: { id: true } });
+  if (taken) throw new AppError('That phone number is already used by another account.', 400);
+
+  const { code, tempToken } = await otpService.createOtp(req.user.id, 'PHONE_VERIFY');
+  await otpService.sendOtp({ ...req.user, phone }, code, 'SMS');
+  const phoneToken = jwt.sign({ userId: req.user.id, phone }, process.env.JWT_SECRET, { expiresIn: '10m' });
+  res.status(200).json({ success: true, message: 'We sent a code to that number.', data: { tempToken, phoneToken, maskedContact: otpService.maskPhone(phone) } });
+};
+
+exports.verifyPhone = async (req, res) => {
+  const { code, tempToken, phoneToken } = req.body;
+  if (!code || !tempToken || !phoneToken) throw new AppError('Code and session are required', 400);
+  let decoded;
+  try { decoded = jwt.verify(phoneToken, process.env.JWT_SECRET); } catch { throw new AppError('This request expired. Please start again.', 400); }
+  if (decoded.userId !== req.user.id) throw new AppError('This request does not belong to you.', 403);
+
+  const result = await otpService.verifyOtp(tempToken, String(code));
+  if (!result.valid) throw new AppError(result.reason, 400);
+  if (result.userId !== req.user.id) throw new AppError('This code does not belong to you.', 403);
+  const taken = await prisma.user.findFirst({ where: { phone: decoded.phone, id: { not: req.user.id } }, select: { id: true } });
+  if (taken) throw new AppError('That phone number is already used by another account.', 400);
+
+  const user = await prisma.user.update({ where: { id: req.user.id }, data: { phone: decoded.phone }, select: AUTH_USER_SELECT });
+  res.status(200).json({ success: true, message: 'Phone number saved', data: { user } });
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Staff two-step sign-in (authenticator app). Routes: /api/auth/mfa/*
+// ─────────────────────────────────────────────────────────────────────────────
+const mfa = require('../services/mfa.service');
+const mfaReply = (res, user, extra = {}) => res.json({ success: true, data: { token: generateToken(user.id, { mfa: true }), ...extra } });
+exports.mfaSetup  = async (req, res) => res.json({ success: true, data: await mfa.setup({ user: req.user }) });
+exports.mfaEnable = async (req, res) => { const out = await mfa.enable({ user: req.user, code: req.body.code, req }); mfaReply(res, req.user, out); };
+exports.mfaVerify = async (req, res) => { const out = await mfa.verify({ user: req.user, code: req.body.code, backupCode: req.body.backupCode, req }); mfaReply(res, req.user, out); };
+exports.mfaDisable = async (req, res) => { await mfa.disable({ user: req.user, code: req.body.code, req }); res.json({ success: true, message: 'Two-step sign-in is off.' }); };
+exports.mfaReset  = async (req, res) => { await mfa.reset({ targetId: req.params.id, actor: req.user.id, req }); res.json({ success: true, message: 'Reset. They will set it up again at their next sign-in.' }); };

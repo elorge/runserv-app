@@ -1,0 +1,49 @@
+{
+  "cli": {
+    "version": ">= 18.6.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development-customer": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "customer"
+      }
+    },
+    "development-driver": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "driver"
+      }
+    },
+    "preview-customer": {
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "customer"
+      }
+    },
+    "preview-driver": {
+      "distribution": "internal",
+      "env": {
+        "APP_VARIANT": "driver"
+      }
+    },
+    "production-customer": {
+      "autoIncrement": true,
+      "env": {
+        "APP_VARIANT": "customer"
+      }
+    },
+    "production-driver": {
+      "autoIncrement": true,
+      "env": {
+        "APP_VARIANT": "driver"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

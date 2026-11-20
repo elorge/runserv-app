@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Runserv — rides, deliveries and business mobility across Africa</title>
+<meta name="description" content="Runserv connects riders, businesses, fleets and banks on one platform. See a sample dashboard and request a demo.">
+<style>
+:root{--bg:#fff;--soft:#f4f6fb;--ink:#0f1b33;--mute:#56627a;--line:#e2e7f0;--brand:#12306b;--accent:#f2a900;--ok:#0e8f5b;--card:#fff}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0b1222;--soft:#111b30;--ink:#eef2fb;--mute:#9aa8c4;--line:#22304d;--brand:#7fa6ff;--accent:#f2b629;--ok:#35c98a;--card:#0f192d}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:inherit}.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);z-index:5}
+header .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+.logo{font-weight:800;font-size:20px;letter-spacing:-.02em;text-decoration:none}.logo b{color:var(--accent)}
+nav a{margin-left:20px;text-decoration:none;color:var(--mute);font-size:14px}
+.btn{display:inline-block;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:12px 22px;font:600 15px inherit;cursor:pointer;text-decoration:none}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .btn{color:#0b1222}}
+.btn.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.hero{padding:72px 0 56px;background:linear-gradient(180deg,var(--soft),var(--bg))}
+.hero h1{font-size:clamp(32px,5vw,52px);line-height:1.1;letter-spacing:-.03em;margin:0 0 16px;max-width:15em}
+.hero p{font-size:19px;color:var(--mute);max-width:36em;margin:0 0 28px}.hero .btn{margin:0 10px 10px 0}
+section{padding:56px 0}section h2{font-size:30px;letter-spacing:-.02em;margin:0 0 8px}.lead{color:var(--mute);margin:0 0 28px;max-width:40em}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--mute);font-size:15px}
+.tag{display:inline-block;font-size:12px;font-weight:700;color:var(--brand);background:var(--soft);border-radius:99px;padding:2px 10px;margin-bottom:10px}
+.soft{background:var(--soft)}
+.steps{counter-reset:s;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.steps div{position:relative;padding-top:44px}.steps div:before{counter-increment:s;content:counter(s);position:absolute;top:0;left:0;width:34px;height:34px;border-radius:50%;background:var(--accent);color:#1a1300;font-weight:800;display:grid;place-items:center}
+.steps h3{margin:0 0 4px;font-size:17px}.steps p{margin:0;color:var(--mute);font-size:15px}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:7px 16px;font:600 14px inherit;cursor:pointer}
+.tabs button[aria-selected=true]{background:var(--brand);color:#fff;border-color:var(--brand)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .tabs button[aria-selected=true]{color:#0b1222}}
+.dash{border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden;box-shadow:0 10px 30px rgba(15,27,51,.08)}
+.bar{display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft);font-size:12px;color:var(--mute)}.bar i{width:10px;height:10px;border-radius:50%;background:var(--line)}
+.body{padding:18px;overflow-x:auto}.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
+.kpi{border:1px solid var(--line);border-radius:12px;padding:12px}.kpi small{color:var(--mute);display:block;font-size:12px}.kpi b{font-size:22px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:460px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}th{color:var(--mute);font-weight:600;font-size:12px}
+.pill{font-size:12px;font-weight:700;border-radius:99px;padding:2px 9px;background:var(--soft)}.pill.ok{color:var(--ok)}.pill.wait{color:#b26a00}
+.note{font-size:13px;color:var(--mute);margin-top:10px}
+form{display:grid;gap:12px;max-width:560px}label{font-size:14px;font-weight:600;display:grid;gap:4px}
+input,select,textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%}
+.hp{position:absolute;left:-9999px;height:0;overflow:hidden}
+#msg{font-weight:600}#msg.ok{color:var(--ok)}#msg.err{color:#c0392b}
+footer{border-top:1px solid var(--line);padding:28px 0;color:var(--mute);font-size:14px}
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="logo" href="#">Run<b>serv</b></a><nav><a href="#who">Who it’s for</a><a href="#how">How it works</a><a href="#sample">Sample dashboard</a><a class="btn" href="#demo" style="margin-left:20px;padding:8px 16px">Request a demo</a></nav></div></header>
+
+<main>
+<div class="hero"><div class="wrap">
+<h1>One platform for rides, deliveries and business mobility.</h1>
+<p>Runserv brings riders, drivers, delivery partners, companies, fleets and banks onto a single, auditable system, with payments that settle where they should and a dashboard for every role.</p>
+<a class="btn" href="#demo">Request a demo</a><a class="btn alt" href="#sample">See a sample dashboard</a>
+</div></div>
+
+<section id="who"><div class="wrap">
+<h2>Built for each side of the market</h2><p class="lead">Everyone signs in to the same Runserv, and sees only what their role allows.</p>
+<div class="grid">
+<div class="card"><span class="tag">Businesses</span><h3>Corporate accounts</h3><p>Staff rides and deliveries on one monthly invoice, with budgets, approvals and a prepaid wallet you can top up by bank transfer.</p></div>
+<div class="card"><span class="tag">Fleet owners</span><h3>Fleet portal</h3><p>Register vehicles and drivers, track documents and earnings, and see exactly what is owed to you.</p></div>
+<div class="card"><span class="tag">Banks</span><h3>Partner offers</h3><p>Run reviewed campaigns for your customers and settle what is owed through a clear, matched payment trail.</p></div>
+<div class="card"><span class="tag">Riders &amp; drivers</span><h3>The mobile app</h3><p>Request a ride or delivery, pay from a wallet, and get paid out to a bank or mobile-money account.</p></div>
+</div></div></section>
+
+<section class="soft" id="how"><div class="wrap">
+<h2>How a company pays Runserv</h2><p class="lead">No manual chasing. The company’s reference does the matching.</p>
+<div class="steps">
+<div><h3>See where to pay</h3><p>The company’s Billing page lists Runserv’s bank accounts and a reference for its wallet and for each open invoice.</p></div>
+<div><h3>Transfer from your bank</h3><p>Pay into any listed account and put the reference in the narration. Use whichever bank suits you.</p></div>
+<div><h3>It settles itself</h3><p>When the bank reports the credit, it is matched to the right wallet or invoice and shows on the company’s dashboard and in Runserv’s records.</p></div>
+</div>
+<p class="note">Anything unclear (a missing reference, a wrong amount) goes to a review queue instead of being guessed, and manual entries need a second person’s approval.</p>
+</div></section>
+
+<section id="sample"><div class="wrap">
+<h2>A look inside</h2><p class="lead">Sample screens with made-up data, so you can see how each role works day to day.</p>
+<div class="tabs" role="tablist" aria-label="Sample dashboards">
+<button role="tab" aria-selected="true" data-t="co">Company</button><button role="tab" aria-selected="false" data-t="ad">Runserv finance</button><button role="tab" aria-selected="false" data-t="fl">Fleet</button></div>
+<div class="dash"><div class="bar"><i></i><i></i><i></i><span style="margin-left:8px" id="url">business.runserv.example / billing</span></div>
+<div class="body" id="panel"></div></div>
+<p class="note">Sample data only. Names, amounts and references are illustrative.</p>
+</div></section>
+
+<section class="soft" id="demo"><div class="wrap">
+<h2>Request a demo</h2><p class="lead">Tell us a little about you and we will reply within one working day.</p>
+<form id="f" novalidate>
+<label>Your name<input name="name" required maxlength="120" autocomplete="name"></label>
+<label>Work email<input name="email" type="email" required autocomplete="email"></label>
+<label>Phone (optional)<input name="phone" type="tel" autocomplete="tel"></label>
+<label>Organisation (optional)<input name="organisation" maxlength="160" autocomplete="organization"></label>
+<label>I’m interested in<select name="interest"><option value="CORPORATE">Corporate accounts</option><option value="FLEET">Fleet management</option><option value="BANK_PARTNERSHIP">Bank partnership</option><option value="RIDES">Rides</option><option value="DELIVERIES">Deliveries</option><option value="OTHER">Something else</option></select></label>
+<label>Anything we should know? (optional)<textarea name="message" rows="3" maxlength="1500"></textarea></label>
+<div class="hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+<div><button class="btn" type="submit" id="go">Send request</button></div>
+<p id="msg" role="status"></p>
+</form></div></section>
+</main>
+
+<footer><div class="wrap">© <span id="y"></span> Runserv. All rights reserved.</div></footer>
+
+<script>
+// Set this to your API origin, e.g. "https://api.runserv.com". The form posts to {API}/api/public/demo-requests.
+var API = "";
+var DATA = {
+ co:{u:"business.runserv.example / billing",h:'<div class="kpis"><div class="kpi"><small>Wallet balance</small><b>₦1,250,000</b></div><div class="kpi"><small>Open invoices</small><b>2</b></div><div class="kpi"><small>This month’s trips</small><b>184</b></div></div><table><tr><th>Pay into</th><th>Account</th><th>Your reference</th></tr><tr><td>Wema Bank</td><td>•••• 1234</td><td><b>RSC-7F3A9B21</b> (wallet)</td></tr><tr><td>Fidelity Bank</td><td>•••• 5678</td><td><b>RSI-0C44D9E2</b> (invoice 2026-10)</td></tr><tr><td>First Bank</td><td>•••• 9012</td><td>Same references work here</td></tr></table>'},
+ ad:{u:"admin.runserv.example / banks / receipts",h:'<div class="kpis"><div class="kpi"><small>Received this month</small><b>₦38.4M</b></div><div class="kpi"><small>Waiting for review</small><b>3</b></div><div class="kpi"><small>Unmatched</small><b>1</b></div></div><table><tr><th>Bank account</th><th>Received</th><th>Status</th></tr><tr><td>Wema •••• 1234</td><td>₦21.0M</td><td><span class="pill ok">Matched</span></td></tr><tr><td>Fidelity •••• 5678</td><td>₦12.9M</td><td><span class="pill ok">Matched</span></td></tr><tr><td>First Bank •••• 9012</td><td>₦4.5M</td><td><span class="pill wait">1 awaiting second approver</span></td></tr></table>'},
+ fl:{u:"fleet.runserv.example / overview",h:'<div class="kpis"><div class="kpi"><small>Vehicles</small><b>24</b></div><div class="kpi"><small>Active drivers</small><b>21</b></div><div class="kpi"><small>Documents expiring (30 days)</small><b>4</b></div></div><table><tr><th>Vehicle</th><th>Driver</th><th>Documents</th></tr><tr><td>Toyota Corolla · LA-123-XY</td><td>A. Bello</td><td><span class="pill ok">Valid</span></td></tr><tr><td>Hyundai Elantra · AB-456-CD</td><td>C. Okoro</td><td><span class="pill wait">Insurance in 12 days</span></td></tr></table>'}
+};
+var panel=document.getElementById("panel"),url=document.getElementById("url");
+function show(k){panel.innerHTML=DATA[k].h;url.textContent=DATA[k].u}
+document.querySelectorAll(".tabs button").forEach(function(b){b.addEventListener("click",function(){document.querySelectorAll(".tabs button").forEach(function(x){x.setAttribute("aria-selected",x===b)});show(b.dataset.t)})});
+show("co");document.getElementById("y").textContent=new Date().getFullYear();
+var f=document.getElementById("f"),msg=document.getElementById("msg"),go=document.getElementById("go");
+f.addEventListener("submit",function(e){e.preventDefault();msg.className="";msg.textContent="";
+ var d=Object.fromEntries(new FormData(f).entries());
+ if(!d.name||d.name.trim().length<2||!/^\S+@\S+\.\S+$/.test(d.email||"")){msg.className="err";msg.textContent="Please enter your name and a valid email.";return}
+ go.disabled=true;go.textContent="Sending…";
+ fetch(API+"/api/public/demo-requests",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})
+  .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.message||"Something went wrong")})})
+  .then(function(){f.reset();msg.className="ok";msg.textContent="Thank you. We will be in touch within one working day."})
+  .catch(function(){msg.className="err";msg.textContent="We couldn’t send that just now. Please email us instead."})
+  .finally(function(){go.disabled=false;go.textContent="Send request"})});
+</script>
+</body></html>

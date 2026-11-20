@@ -1,0 +1,14 @@
+# Repository-wide ignores (each of backend/, admin/ and mobile/ also has its own).
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+logs/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+__pycache__/

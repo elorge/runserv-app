@@ -1,0 +1,550 @@
+// admin-web/src/pages/Deliveries/DeliveryDetails.tsx
+// Map: Leaflet + OpenStreetMap (free, no API key).
+// All other logic — cancel, export, timeline, payment, package — unchanged.
+
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import L from 'leaflet';
+import {
+  ArrowLeft, Package, User, Phone, Mail, MapPin, Clock,
+  CheckCircle, XCircle, DollarSign, Star, Truck, AlertTriangle,
+  Download, FileText,
+} from 'lucide-react';
+import { deliveriesAPI } from '@/services/api/deliveries';
+import { Delivery }       from '@/types';
+import { Card, Button, Badge, Modal, Alert, Spinner } from '@/components/common';
+import { formatDateTime } from '@/utils/helpers';
+import { formatMoney } from '@/utils/money';
+import { useSocket }      from '@/hooks/useSocket';
+import toast              from 'react-hot-toast';
+
+// ── Leaflet default-icon fix for Vite bundling ───────────────────────────────
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon   from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+// @ts-ignore
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({ iconUrl: markerIcon, iconRetinaUrl: markerIcon2x, shadowUrl: markerShadow });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATUS config — unchanged
+// ─────────────────────────────────────────────────────────────────────────────
+const STATUS_CONFIG: Record<string, {
+  label: string;
+  variant: 'success' | 'warning' | 'error' | 'info' | 'default';
+}> = {
+  PENDING:    { label: 'Pending',    variant: 'warning' },
+  ASSIGNED:   { label: 'Assigned',   variant: 'info'    },
+  PICKED_UP:  { label: 'Picked Up',  variant: 'info'    },
+  IN_TRANSIT: { label: 'In Transit', variant: 'info'    },
+  DELIVERED:  { label: 'Delivered',  variant: 'success' },
+  CANCELLED:  { label: 'Cancelled',  variant: 'error'   },
+};
+
+const isLive = (status: string) =>
+  ['ASSIGNED', 'PICKED_UP', 'IN_TRANSIT'].includes(status);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-components — unchanged
+// ─────────────────────────────────────────────────────────────────────────────
+const TimelineStep: React.FC<{
+  label: string; at?: string | null; done: boolean; last?: boolean;
+}> = ({ label, at, done, last }) => (
+  <div className="flex gap-3">
+    <div className="flex flex-col items-center">
+      <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+        done ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'
+      }`}>
+        {done ? <CheckCircle className="h-4 w-4" /> : <div className="w-2 h-2 rounded-full bg-gray-300" />}
+      </div>
+      {!last && <div className={`w-0.5 flex-1 my-1 ${done ? 'bg-green-200' : 'bg-gray-200'}`} />}
+    </div>
+    <div className="pb-4">
+      <p className={`text-sm font-medium ${done ? 'text-gray-900' : 'text-gray-400'}`}>{label}</p>
+      {at && <p className="text-xs text-gray-500 mt-0.5">{formatDateTime(at)}</p>}
+    </div>
+  </div>
+);
+
+const InfoRow: React.FC<{
+  icon: React.ReactNode; label: string; value: React.ReactNode;
+}> = ({ icon, label, value }) => (
+  <div className="flex items-start gap-3 py-2.5 border-b border-gray-50 last:border-0">
+    <span className="text-gray-400 mt-0.5 flex-shrink-0">{icon}</span>
+    <div className="flex-1 min-w-0">
+      <p className="text-xs text-gray-500">{label}</p>
+      <p className="text-sm font-medium text-gray-900 mt-0.5 break-words">{value}</p>
+    </div>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Leaflet map hook  (replaces useDeliveryMap / Google Maps)
+// ─────────────────────────────────────────────────────────────────────────────
+function useDeliveryMap(
+  containerRef: React.RefObject<HTMLDivElement>,
+  delivery: Delivery | null,
+  onLocationUpdate: (fn: (lat: number, lng: number) => void) => () => void,
+) {
+  const mapRef           = useRef<L.Map | null>(null);
+  const partnerMarkerRef = useRef<L.Marker | null>(null);
+
+  useEffect(() => {
+    if (!delivery || !containerRef.current) return;
+    if (mapRef.current) return; // already initialised
+
+    // ── Init map ──
+    const map = L.map(containerRef.current, {
+      center:  [delivery.pickupLat, delivery.pickupLng],
+      zoom:    13,
+      zoomControl: true,
+    });
+    mapRef.current = map;
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // ── Pickup marker (green P) ──
+    const pickupIcon = L.divIcon({
+      className: '',
+      html: `<div style="background:#22C55E;color:#fff;font-weight:700;font-size:11px;border:2px solid #fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.3)">P</div>`,
+      iconSize: [28, 28], iconAnchor: [14, 14],
+    });
+    L.marker([delivery.pickupLat, delivery.pickupLng], { icon: pickupIcon })
+      .addTo(map)
+      .bindPopup(`<strong>Pickup</strong><br/>${delivery.pickupAddress}`);
+
+    // ── Dropoff marker (red D) ──
+    const dropoffIcon = L.divIcon({
+      className: '',
+      html: `<div style="background:#EF4444;color:#fff;font-weight:700;font-size:11px;border:2px solid #fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.3)">D</div>`,
+      iconSize: [28, 28], iconAnchor: [14, 14],
+    });
+    L.marker([delivery.dropoffLat, delivery.dropoffLng], { icon: dropoffIcon })
+      .addTo(map)
+      .bindPopup(`<strong>Dropoff</strong><br/>${delivery.dropoffAddress}`);
+
+    // ── Route polyline (straight line — no billing unlike Directions API) ──
+    L.polyline(
+      [[delivery.pickupLat, delivery.pickupLng], [delivery.dropoffLat, delivery.dropoffLng]],
+      { color: '#3B82F6', weight: 4, opacity: 0.75, dashArray: '8 6' }
+    ).addTo(map);
+
+    // ── Fit map to both points ──
+    map.fitBounds(
+      [[delivery.pickupLat, delivery.pickupLng], [delivery.dropoffLat, delivery.dropoffLng]],
+      { padding: [40, 40] }
+    );
+
+    // ── Partner marker (blue 🛵) if location known ──
+    const profile = (delivery.partner as any)?.deliveryProfile;
+    const initLat = profile?.currentLat;
+    const initLng = profile?.currentLng;
+
+    const courierIcon = L.divIcon({
+      className: '',
+      html: `<div style="background:#3B82F6;border:2px solid #fff;border-radius:50%;width:32px;height:32px;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);font-size:16px">🛵</div>`,
+      iconSize: [32, 32], iconAnchor: [16, 16],
+    });
+
+    if (initLat && initLng) {
+      partnerMarkerRef.current = L.marker([initLat, initLng], { icon: courierIcon })
+        .addTo(map)
+        .bindPopup(`${delivery.partner?.firstName ?? ''} ${delivery.partner?.lastName ?? ''}`.trim() || 'Courier');
+    }
+
+    // ── Subscribe to live location updates ──
+    const unsub = onLocationUpdate((lat, lng) => {
+      if (!mapRef.current) return;
+      if (partnerMarkerRef.current) {
+        partnerMarkerRef.current.setLatLng([lat, lng]);
+      } else {
+        partnerMarkerRef.current = L.marker([lat, lng], { icon: courierIcon })
+          .addTo(mapRef.current)
+          .bindPopup('Courier');
+      }
+      mapRef.current.panTo([lat, lng]);
+    });
+
+    return () => {
+      unsub();
+      map.remove();
+      mapRef.current = null;
+      partnerMarkerRef.current = null;
+    };
+  }, [delivery?.id]);
+
+  // No mapError state needed — Leaflet never requires an API key
+  return { mapError: '' };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN SCREEN — all logic identical to original
+// ─────────────────────────────────────────────────────────────────────────────
+const DeliveryDetails: React.FC = () => {
+  const { id }   = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { on }   = useSocket();
+
+  const [delivery,     setDelivery]     = useState<Delivery | null>(null);
+  const [loading,      setLoading]      = useState(true);
+  const [showCancel,   setShowCancel]   = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
+  const [cancelling,   setCancelling]   = useState(false);
+
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+
+  const onLocationUpdate = useCallback(
+    (fn: (lat: number, lng: number) => void) => {
+      if (!delivery || !isLive(delivery.status)) return () => {};
+      return on('partner:location:update', (data: { lat: number; lng: number }) => {
+        fn(data.lat, data.lng);
+      });
+    },
+    [delivery?.status, on]
+  );
+
+  const { mapError } = useDeliveryMap(mapContainerRef, delivery, onLocationUpdate);
+
+  const loadDelivery = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await deliveriesAPI.getDeliveryById(id);
+      setDelivery(res.data.delivery);
+    } catch {
+      toast.error('Failed to load delivery');
+    } finally { setLoading(false); }
+  }, [id]);
+
+  useEffect(() => { loadDelivery(); }, [loadDelivery]);
+
+  const handleCancel = async () => {
+    if (!id) return;
+    setCancelling(true);
+    try {
+      await deliveriesAPI.cancelDelivery(id, cancelReason);
+      toast.success('Delivery cancelled');
+      setShowCancel(false);
+      loadDelivery();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to cancel');
+    } finally { setCancelling(false); }
+  };
+
+  const exportReport = () => {
+    if (!delivery) return;
+    const lines = [
+      `RUNSERV DELIVERY REPORT`,
+      `Generated: ${new Date().toLocaleString()}`,
+      ``,
+      `DELIVERY ID:   ${delivery.id}`,
+      `STATUS:        ${delivery.status}`,
+      ``,
+      `CUSTOMER`,
+      `  Name:  ${delivery.customer?.firstName} ${delivery.customer?.lastName}`,
+      `  Email: ${delivery.customer?.email}`,
+      `  Phone: ${(delivery.customer as any)?.phone ?? '—'}`,
+      `  Pickup contact:  ${delivery.pickupContact}`,
+      `  Dropoff contact: ${delivery.dropoffContact}`,
+      ``,
+      `DELIVERY PARTNER`,
+      `  Name:    ${delivery.partner ? `${delivery.partner.firstName} ${delivery.partner.lastName}` : 'Unassigned'}`,
+      `  Email:   ${delivery.partner?.email ?? '—'}`,
+      `  Vehicle: ${(delivery.partner as any)?.deliveryProfile?.vehicleType ?? '—'} • ${(delivery.partner as any)?.deliveryProfile?.vehiclePlate ?? '—'}`,
+      ``,
+      `PACKAGE`,
+      `  Description: ${delivery.packageDescription}`,
+      `  Weight:      ${delivery.packageWeight ?? '—'} kg`,
+      `  Value:       ${delivery.packageValue != null ? formatMoney(delivery.packageValue, delivery.currency) : '—'}`,
+      `  Notes:       ${delivery.notes ?? '—'}`,
+      ``,
+      `ROUTE`,
+      `  Pickup:   ${delivery.pickupAddress}`,
+      `            (${delivery.pickupLat}, ${delivery.pickupLng})`,
+      `  Dropoff:  ${delivery.dropoffAddress}`,
+      `            (${delivery.dropoffLat}, ${delivery.dropoffLng})`,
+      `  Distance: ${delivery.distance?.toFixed(2) ?? '—'} km`,
+      ``,
+      `FINANCIALS`,
+      `  Estimated Fee:  ${formatMoney(delivery.estimatedFee, delivery.currency)}`,
+      `  Actual Fee:     ${delivery.actualFee != null ? formatMoney(delivery.actualFee, delivery.currency) : 'Pending'}`,
+      `  Payment Method: ${delivery.payment?.method ?? '—'}`,
+      `  Payment Status: ${delivery.payment?.status ?? '—'}`,
+      `  Platform Fee:   ${delivery.payment?.platformFee != null ? formatMoney(delivery.payment.platformFee, delivery.currency) : '—'}`,
+      `  Partner Earned: ${delivery.payment?.driverEarnings != null ? formatMoney(delivery.payment.driverEarnings, delivery.currency) : '—'}`,
+      `  Transaction ID: ${delivery.payment?.transactionId ?? '—'}`,
+      ``,
+      `TIMELINE`,
+      `  Requested:  ${delivery.requestedAt ? formatDateTime(delivery.requestedAt) : '—'}`,
+      `  Assigned:   ${delivery.assignedAt  ? formatDateTime(delivery.assignedAt)  : '—'}`,
+      `  Picked Up:  ${delivery.pickedUpAt  ? formatDateTime(delivery.pickedUpAt)  : '—'}`,
+      `  Delivered:  ${delivery.deliveredAt ? formatDateTime(delivery.deliveredAt) : '—'}`,
+      `  Cancelled:  ${delivery.cancelledAt ? formatDateTime(delivery.cancelledAt) : '—'}`,
+      ``,
+      `CANCELLATION REASON: ${(delivery as any).cancellationReason ?? '—'}`,
+      `RECIPIENT NAME:      ${delivery.recipientName ?? '—'}`,
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `delivery-${delivery.id.slice(0, 8)}-report.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  if (loading) return <div className="flex justify-center py-20"><Spinner size="xl" showLabel /></div>;
+
+  if (!delivery) return (
+    <div className="text-center py-20">
+      <p className="text-gray-500">Delivery not found.</p>
+      <Button className="mt-4" onClick={() => navigate('/deliveries')}>Back</Button>
+    </div>
+  );
+
+  const sc   = STATUS_CONFIG[delivery.status] ?? STATUS_CONFIG.PENDING;
+  const live = isLive(delivery.status);
+
+  return (
+    <div className="space-y-6">
+      {/* ── Page header ── */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" onClick={() => navigate('/deliveries')}>
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold text-gray-900">Delivery Detail</h1>
+              <Badge variant={sc.variant}>{sc.label}</Badge>
+              {live && (
+                <span className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
+                  LIVE
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5 font-mono">{delivery.id}</p>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={exportReport}>
+            <Download className="h-4 w-4" />Export Report
+          </Button>
+          {!['DELIVERED', 'CANCELLED'].includes(delivery.status) && (
+            <Button variant="danger" onClick={() => setShowCancel(true)}>
+              <XCircle className="h-4 w-4" />Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Map card ── */}
+      <Card padding={false}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+          <p className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <MapPin className="h-4 w-4 text-primary-500" />
+            {live ? 'Live Tracking' : 'Route Map'}
+          </p>
+          <span className="text-xs text-gray-400">OpenStreetMap</span>
+        </div>
+
+        {mapError ? (
+          <div className="h-64 flex items-center justify-center bg-gray-50">
+            <div className="text-center text-gray-400">
+              <AlertTriangle className="h-8 w-8 mx-auto mb-2 text-amber-400" />
+              <p className="text-sm">{mapError}</p>
+            </div>
+          </div>
+        ) : (
+          <div ref={mapContainerRef} className="w-full h-96 bg-gray-100" />
+        )}
+
+        <div className="flex items-center gap-6 px-5 py-3 text-xs text-gray-500 border-t border-gray-50">
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />Pickup
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-red-500 inline-block" />Dropoff
+          </span>
+          {delivery.partner && (
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" />Partner
+            </span>
+          )}
+          <span className="flex items-center gap-1.5">
+            <span className="w-6 border-t-2 border-dashed border-blue-400 inline-block" />Route
+          </span>
+        </div>
+      </Card>
+
+      {/* ── Detail grid ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-5">
+
+          {/* Customer */}
+          <Card>
+            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <User className="h-4 w-4 text-primary-500" />Customer
+            </h3>
+            <InfoRow icon={<User className="h-4 w-4" />}   label="Name"            value={`${delivery.customer?.firstName} ${delivery.customer?.lastName}`} />
+            <InfoRow icon={<Mail className="h-4 w-4" />}   label="Email"           value={delivery.customer?.email} />
+            <InfoRow icon={<Phone className="h-4 w-4" />}  label="Phone"           value={(delivery.customer as any)?.phone ?? '—'} />
+            <InfoRow icon={<MapPin className="h-4 w-4" />} label="Pickup contact"  value={delivery.pickupContact} />
+            <InfoRow icon={<MapPin className="h-4 w-4" />} label="Dropoff contact" value={delivery.dropoffContact} />
+          </Card>
+
+          {/* Partner */}
+          <Card>
+            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <Truck className="h-4 w-4 text-warning-500" />Delivery Partner
+            </h3>
+            {delivery.partner ? (
+              <>
+                <InfoRow icon={<User className="h-4 w-4" />}  label="Name"    value={`${delivery.partner.firstName} ${delivery.partner.lastName}`} />
+                <InfoRow icon={<Mail className="h-4 w-4" />}  label="Email"   value={delivery.partner.email} />
+                <InfoRow icon={<Phone className="h-4 w-4" />} label="Phone"   value={(delivery.partner as any)?.phone ?? '—'} />
+                <InfoRow icon={<Truck className="h-4 w-4" />} label="Vehicle" value={`${(delivery.partner as any)?.deliveryProfile?.vehicleType ?? '—'} • ${(delivery.partner as any)?.deliveryProfile?.vehiclePlate ?? '—'}`} />
+                {!!((delivery.partner as any)?.deliveryProfile?.rating) && (
+                  <InfoRow icon={<Star className="h-4 w-4" />} label="Rating" value={`${(delivery.partner as any).deliveryProfile.rating.toFixed(1)} ★`} />
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-gray-400 italic py-2">No partner assigned yet</p>
+            )}
+          </Card>
+
+          {/* Package */}
+          <Card>
+            <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <Package className="h-4 w-4 text-indigo-500" />Package
+            </h3>
+            <InfoRow icon={<Package className="h-4 w-4" />}    label="Description"    value={delivery.packageDescription} />
+            <InfoRow icon={<Package className="h-4 w-4" />}    label="Weight"         value={delivery.packageWeight ? `${delivery.packageWeight} kg` : '—'} />
+            <InfoRow icon={<DollarSign className="h-4 w-4" />} label="Declared value" value={delivery.packageValue ? formatMoney(delivery.packageValue, delivery.currency) : '—'} />
+            {delivery.notes && <InfoRow icon={<FileText className="h-4 w-4" />} label="Notes" value={delivery.notes} />}
+            {delivery.recipientName && <InfoRow icon={<User className="h-4 w-4" />} label="Received by" value={delivery.recipientName} />}
+            {delivery.deliveryImageUrl && (
+              <div className="mt-3">
+                <p className="text-xs text-gray-500 mb-2">Delivery Proof Photo</p>
+                <a href={delivery.deliveryImageUrl} target="_blank" rel="noopener noreferrer">
+                  <img
+                    src={delivery.deliveryImageUrl}
+                    alt="Delivery proof"
+                    className="rounded-lg border border-gray-200 max-h-40 object-cover hover:opacity-90 transition-opacity"
+                  />
+                </a>
+              </div>
+            )}
+          </Card>
+
+          {/* Payment */}
+          {delivery.payment && (
+            <Card>
+              <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                <DollarSign className="h-4 w-4 text-green-500" />Payment
+              </h3>
+              <InfoRow icon={<DollarSign className="h-4 w-4" />}  label="Amount"          value={formatMoney(delivery.payment.amount, delivery.payment.currency ?? delivery.currency)} />
+              <InfoRow icon={<DollarSign className="h-4 w-4" />}  label="Method"          value={delivery.payment.method} />
+              <InfoRow icon={<CheckCircle className="h-4 w-4" />} label="Status"          value={<Badge variant={delivery.payment.status === 'COMPLETED' ? 'success' : 'warning'}>{delivery.payment.status}</Badge>} />
+              <InfoRow icon={<DollarSign className="h-4 w-4" />}  label="Platform fee"    value={(delivery.payment as any).platformFee != null ? formatMoney((delivery.payment as any).platformFee, delivery.payment.currency ?? delivery.currency) : '—'} />
+              <InfoRow icon={<DollarSign className="h-4 w-4" />}  label="Partner earned"  value={(delivery.payment as any).driverEarnings != null ? formatMoney((delivery.payment as any).driverEarnings, delivery.payment.currency ?? delivery.currency) : '—'} />
+              <InfoRow icon={<FileText className="h-4 w-4" />}    label="Transaction ID"  value={<span className="font-mono text-xs">{delivery.payment.transactionId ?? '—'}</span>} />
+            </Card>
+          )}
+        </div>
+
+        <div className="space-y-5">
+          {/* Summary */}
+          <Card>
+            <h3 className="text-sm font-semibold text-gray-700 mb-4">Summary</h3>
+            <InfoRow icon={<DollarSign className="h-4 w-4" />} label="Estimated fee" value={formatMoney(delivery.estimatedFee, delivery.currency)} />
+            <InfoRow icon={<DollarSign className="h-4 w-4" />} label="Final fee"     value={delivery.actualFee ? formatMoney(delivery.actualFee, delivery.currency) : 'Pending'} />
+            <InfoRow icon={<MapPin className="h-4 w-4" />}     label="Distance"      value={delivery.distance ? `${delivery.distance.toFixed(2)} km` : '—'} />
+            {delivery.rating && (
+              <InfoRow
+                icon={<Star className="h-4 w-4" />}
+                label="Customer rating"
+                value={`${delivery.rating.rating} ★${delivery.rating.comment ? ` — "${delivery.rating.comment}"` : ''}`}
+              />
+            )}
+            {(delivery as any).cancellationReason && (
+              <InfoRow
+                icon={<AlertTriangle className="h-4 w-4 text-red-400" />}
+                label="Cancellation reason"
+                value={(delivery as any).cancellationReason}
+              />
+            )}
+          </Card>
+
+          {/* Timeline */}
+          <Card>
+            <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+              <Clock className="h-4 w-4" />Timeline
+            </h3>
+            <div className="pt-1">
+              <TimelineStep label="Requested"  at={delivery.requestedAt} done={!!delivery.requestedAt} />
+              <TimelineStep label="Assigned"   at={delivery.assignedAt}  done={!!delivery.assignedAt} />
+              <TimelineStep label="Picked Up"  at={delivery.pickedUpAt}  done={!!delivery.pickedUpAt} />
+              <TimelineStep
+                label="In Transit"
+                at={(delivery as any).inTransitAt}
+                done={['IN_TRANSIT', 'DELIVERED'].includes(delivery.status)}
+              />
+              <TimelineStep
+                label="Delivered"
+                at={delivery.deliveredAt}
+                done={delivery.status === 'DELIVERED'}
+                last
+              />
+            </div>
+            {delivery.status === 'CANCELLED' && (
+              <div className="mt-2 p-3 bg-red-50 rounded-lg">
+                <p className="text-xs font-medium text-red-600 flex items-center gap-1">
+                  <XCircle className="h-3 w-3" />
+                  Cancelled {delivery.cancelledAt ? formatDateTime(delivery.cancelledAt) : ''}
+                </p>
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+
+      {/* ── Cancel modal ── */}
+      <Modal
+        isOpen={showCancel}
+        onClose={() => setShowCancel(false)}
+        title="Cancel Delivery"
+        size="md"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setShowCancel(false)}>Keep Delivery</Button>
+            <Button variant="danger" loading={cancelling} onClick={handleCancel}>Confirm Cancel</Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <Alert variant="warning">
+            This will cancel the delivery and notify both the customer and partner.
+          </Alert>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Reason <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <textarea
+              rows={3}
+              value={cancelReason}
+              onChange={e => setCancelReason(e.target.value)}
+              placeholder="Enter reason for cancellation..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-400 resize-none"
+            />
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+export default DeliveryDetails;

@@ -1,0 +1,91 @@
+// admin-web/src/services/api/users.ts
+import api from './index';
+import { ApiResponse, PaginatedResponse, User } from '@/types';
+
+export interface CreateAdminPayload {
+  email: string; phone: string; password: string;
+  firstName: string; lastName: string;
+  role: 'SUPER_ADMIN'|'ADMIN'|'SUPPORT'|'MODERATOR'|'CUSTOMER'|'DRIVER'|'DELIVERY_PARTNER';
+  adminDepartment?: 'RIDES'|'DELIVERIES'|'SUPPORT' | null;
+  /** Staff roles: countries they manage ([] = all). Other roles: use countryCode. */
+  supportCountries?: string[];
+  countryCode?: string;
+
+  // ── Driver vehicle ────────────────────────────────────────────────────────
+  licenseNumber?: string;
+  vehicleType?:   'BIKE'|'CAR'|'MOTORCYCLE'|'VAN'|'TRICYCLE';
+  vehicleMake?:   string;
+  vehicleModel?:  string;
+  vehicleYear?:   number;
+  vehicleColor?:  string;
+  vehiclePlate?:  string;
+  numberOfSeats?: number;
+  vehicleSubType?: string;
+
+  // ── Shared KYC document URLs ──────────────────────────────────────────────
+  applicantPhotoUrl?:       string;
+  govtIdUrl?:               string;
+  proofOfAddressUrl?:       string;
+
+  // ── Driver document URLs ──────────────────────────────────────────────────
+  licenseImageUrl?:         string;
+  vehicleRegUrl?:           string;
+  insuranceUrl?:            string;
+  roadWorthinessUrl?:       string;
+  vehicleInspectionUrl?:    string;
+  hackneyCertUrl?:          string;
+  vehiclePhotoExteriorUrl?: string;
+  vehiclePhotoInteriorUrl?: string;
+  riderCardUrl?:            string;
+  helmetPhotoUrl?:          string;
+  dispatchPermitUrl?:       string;
+  guarantorLetterUrl?:      string;
+  guarantorIdUrl?:          string;
+  operatorPermitUrl?:       string;
+
+  // ── Partner-specific document URLs ────────────────────────────────────────
+  idImageUrl?:              string;
+  vehicleImageUrl?:         string;
+}
+
+export const usersAPI = {
+  getUsers: async (params?: {
+    page?: number; limit?: number;
+    role?: string; search?: string; isActive?: string;
+  }): Promise<PaginatedResponse<User>> => {
+    const response = await api.get('/admin/users', { params });
+    return response.data;
+  },
+
+  getUserById: async (id: string): Promise<ApiResponse<{ user: User }>> => {
+    const response = await api.get(`/admin/users/${id}`);
+    return response.data;
+  },
+
+  /** Super Admin only: clear a colleague's lost authenticator; they enrol again at next sign-in. */
+  resetMfa: async (id: string): Promise<void> => { await api.post(`/admin/users/${id}/mfa/reset`); },
+
+  suspendUser: async (id: string, reason: string): Promise<ApiResponse<{ user: User }>> => {
+    const response = await api.put(`/admin/users/${id}/suspend`, { reason });
+    return response.data;
+  },
+
+  activateUser: async (id: string): Promise<ApiResponse<{ user: User }>> => {
+    const response = await api.put(`/admin/users/${id}/activate`);
+    return response.data;
+  },
+
+  /** Soft-delete — SUPER_ADMIN only */
+  deleteUser: async (id: string): Promise<ApiResponse<{ user: User }>> => {
+    const response = await api.delete(`/admin/users/${id}`);
+    return response.data;
+  },
+
+  /** Create any user account — SUPER_ADMIN only */
+  createAdminUser: async (
+    payload: CreateAdminPayload
+  ): Promise<ApiResponse<{ user: User }>> => {
+    const response = await api.post('/admin/users/create-admin', payload);
+    return response.data;
+  },
+};

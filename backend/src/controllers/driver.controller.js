@@ -1,0 +1,777 @@
+// backend/src/controllers/driver.controller.js
+
+const prisma = require('../lib/prisma');
+const { debitWallet } = require('../services/walletOps');
+const fleetService = require('../services/fleet.service');
+const { validationResult } = require('express-validator');
+const { AppError } = require('../middleware/errorHandler');
+const notificationService = require('../services/notification.service');
+const paymentService = require('../services/payment.service');
+const { logActivity } = require('../utils/auditLog');
+const { formatMoney } = require('../utils/currency');
+const { getCountryForUser } = require('../services/country.service');
+const countrySettingsService = require('../services/countrySettings.service');
+const orangeService = require('../services/orange.service');
+const tracking = require('../services/tracking.service');
+
+console.log('[DRIVER-CTRL] Prisma driver controller loaded');
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  All uploadable document fields mapped to their Prisma field name
+//  and a human-readable label for notifications.
+// ─────────────────────────────────────────────────────────────────────────────
+const DRIVER_DOC_FIELDS = [
+  // ── Personal KYC ──────────────────────────────────────────
+  { field: 'applicantPhotoUrl',        label: 'Applicant Photo'            },
+  { field: 'govtIdUrl',                label: 'Government ID'              },
+  { field: 'proofOfAddressUrl',        label: 'Proof of Address'           },
+
+  // ── Licence & registration (pre-existing) ─────────────────
+  { field: 'licenseImageUrl',          label: "Driver's Licence"           },
+  { field: 'vehicleRegUrl',            label: 'Vehicle Registration'       },
+  { field: 'insuranceUrl',             label: 'Insurance Certificate'      },
+
+  // ── Vehicle condition docs ─────────────────────────────────
+  { field: 'roadWorthinessUrl',        label: 'Road Worthiness Cert'       },
+  { field: 'vehicleInspectionUrl',     label: 'Vehicle Inspection Report'  },
+  { field: 'hackneyCertUrl',           label: 'Hackney / Commercial Permit'},
+  { field: 'vehiclePhotoExteriorUrl',  label: 'Vehicle Photo (Exterior)'   },
+  { field: 'vehiclePhotoInteriorUrl',  label: 'Vehicle Photo (Interior)'   },
+
+  // ── Motorcycle / Bike specific ─────────────────────────────
+  { field: 'riderCardUrl',             label: "Rider's / Operator Card"    },
+  { field: 'helmetPhotoUrl',           label: 'Helmet Photo'               },
+  { field: 'dispatchPermitUrl',        label: 'Dispatch / Courier Permit'  },
+  { field: 'guarantorLetterUrl',       label: 'Guarantor Letter'           },
+  { field: 'guarantorIdUrl',           label: "Guarantor's ID"             },
+];
+
+const DRIVER_DOC_FIELD_NAMES = DRIVER_DOC_FIELDS.map((d) => d.field);
+
+// ─── audit logging: post-approval critical field changes ─── ADDED ────────────
+// Once a driver is approved, their license number / vehicle plate / vehicle
+// type are the things a background check and physical inspection actually
+// verified. Letting those change silently post-approval means an approved
+// driver could swap in a different, unverified vehicle. Not blocked here
+// (that's a product decision) — just made visible.
+const { assertCategoryEnabled } = require('../utils/vehicleCategories');
+const CRITICAL_PROFILE_FIELDS = ['licenseNumber', 'vehiclePlate', 'vehicleType'];
+// ─── END ADDED ──────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function toOptionalTrimmedString(value) {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  return trimmed.length ? trimmed : null;
+}
+
+function buildProfileData(body) {
+  const data = {};
+
+  if (body.licenseNumber !== undefined)
+    data.licenseNumber = String(body.licenseNumber).trim().toUpperCase();
+
+  if (body.vehicleType !== undefined) data.vehicleType = body.vehicleType;
+  if (body.vehicleMake !== undefined) data.vehicleMake = String(body.vehicleMake).trim();
+  if (body.vehicleModel !== undefined) data.vehicleModel = String(body.vehicleModel).trim();
+  if (body.vehicleYear !== undefined) data.vehicleYear = parseInt(body.vehicleYear, 10);
+  if (body.vehicleColor !== undefined) data.vehicleColor = String(body.vehicleColor).trim();
+
+  if (body.vehiclePlate !== undefined)
+    data.vehiclePlate = String(body.vehiclePlate).trim().toUpperCase();
+
+  // Vehicle metadata
+  if (body.numberOfSeats !== undefined)
+    data.numberOfSeats = parseInt(body.numberOfSeats, 10) || null;
+
+  if (body.vehicleSubType !== undefined)
+    data.vehicleSubType = toOptionalTrimmedString(body.vehicleSubType);
+
+  if (body.payloadCapacityKg !== undefined)
+    data.payloadCapacityKg = parseFloat(body.payloadCapacityKg) || null;
+
+  // M13: licence class + expiry are SUBMITTED by the driver; verification is Runserv's (admin endpoint).
+  if (body.licenseClass !== undefined) data.licenseClass = body.licenseClass ? String(body.licenseClass).trim().toUpperCase() : null;
+  if (body.licenseExpiresAt !== undefined) data.licenseExpiresAt = body.licenseExpiresAt ? new Date(body.licenseExpiresAt) : null;
+
+  // Legacy document URL fields (kept for backward compat)
+  if (body.licenseImageUrl !== undefined)
+    data.licenseImageUrl = toOptionalTrimmedString(body.licenseImageUrl);
+  if (body.vehicleRegUrl !== undefined)
+    data.vehicleRegUrl = toOptionalTrimmedString(body.vehicleRegUrl);
+  if (body.insuranceUrl !== undefined)
+    data.insuranceUrl = toOptionalTrimmedString(body.insuranceUrl);
+
+  return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/drivers/profile — create or update vehicle / license info
+// ─────────────────────────────────────────────────────────────────────────────
+exports.createOrUpdateProfile = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const profileData = buildProfileData(req.body);
+  if (profileData.vehicleType) assertCategoryEnabled(profileData.vehicleType);
+
+  const existingProfile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+
+  let profile;
+
+  if (existingProfile) {
+    // ← ADDED — detect changes to fields that were part of what got this
+    // driver approved, before the update overwrites the old values.
+    const changedCriticalFields = CRITICAL_PROFILE_FIELDS.filter(
+      (f) => profileData[f] !== undefined && profileData[f] !== existingProfile[f]
+    );
+
+    // M13: changing anything the licence verification covered sends the licence back for review.
+    const licenceChanged = ['licenseNumber', 'licenseClass', 'licenseImageUrl'].some((f) => profileData[f] !== undefined && profileData[f] !== existingProfile[f])
+      || (profileData.licenseExpiresAt !== undefined && String(profileData.licenseExpiresAt?.toISOString?.().slice(0, 10) ?? '') !== String(existingProfile.licenseExpiresAt?.toISOString?.().slice(0, 10) ?? ''));
+    profile = await prisma.driverProfile.update({
+      where: { userId: req.user.id },
+      data: { ...profileData, ...(licenceChanged && { licenseVerificationStatus: 'UNVERIFIED', licenseVerifiedAt: null, licenseVerifiedById: null, licenseRejectedReason: null }) },
+    });
+
+    // ← ADDED
+    if (existingProfile.isApproved && changedCriticalFields.length > 0) {
+      logActivity({
+        userId:     req.user.id,
+        action:     'profile_critical_field_changed_post_approval',
+        entityType: 'DriverProfile',
+        entityId:   profile.id,
+        details: {
+          role:          'DRIVER',
+          changedFields: changedCriticalFields,
+          previous:      Object.fromEntries(changedCriticalFields.map((f) => [f, existingProfile[f]])),
+          updated:       Object.fromEntries(changedCriticalFields.map((f) => [f, profileData[f]])),
+        },
+        req,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully.',
+      data: { profile },
+    });
+  }
+
+  profile = await prisma.driverProfile.create({
+    data: {
+      userId: req.user.id,
+      licenseNumber: profileData.licenseNumber,
+      vehicleType: profileData.vehicleType,
+      vehicleMake: profileData.vehicleMake,
+      vehicleModel: profileData.vehicleModel,
+      vehicleYear: profileData.vehicleYear,
+      vehicleColor: profileData.vehicleColor,
+      vehiclePlate: profileData.vehiclePlate,
+      numberOfSeats: profileData.numberOfSeats ?? null,
+      vehicleSubType: profileData.vehicleSubType ?? null,
+      payloadCapacityKg: profileData.payloadCapacityKg ?? null,
+      licenseImageUrl: profileData.licenseImageUrl ?? null,
+      vehicleRegUrl: profileData.vehicleRegUrl ?? null,
+      insuranceUrl: profileData.insuranceUrl ?? null,
+      licenseClass: profileData.licenseClass ?? null,
+      licenseExpiresAt: profileData.licenseExpiresAt ?? null,
+    },
+  });
+
+  await notificationService.notify({
+    userId: req.user.id,
+    title: 'Application Submitted 🔍',
+    message:
+      'Your driver application is under review. Upload your documents to speed up approval.',
+    type: 'profile_submitted',
+    data: { profileId: profile.id },
+  });
+
+  const admins = await prisma.user.findMany({
+    where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId: a.id,
+        title: 'New Driver Application 🚗',
+        message: `${req.user.firstName} ${req.user.lastName} has submitted a driver application and is awaiting approval.`,
+        type: 'driver_pending_review',
+        data: {
+          driverUserId: req.user.id,
+          driverProfileId: profile.id,
+        },
+      })
+    )
+  );
+
+  res.status(201).json({
+    success: true,
+    message:
+      'Application submitted. Our team will review it — upload your documents to help speed things up.',
+    data: { profile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/profile
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getProfile = async (req, res) => {
+  const profile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+    include: {
+      user: {
+        select: {
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          profileImage: true,
+        },
+      },
+    },
+  });
+
+  if (!profile) throw new AppError('Driver profile not found', 404);
+
+  res.status(200).json({ success: true, data: { profile } });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/drivers/status — go online / offline
+// ─────────────────────────────────────────────────────────────────────────────
+exports.updateStatus = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { isOnline, currentLat, currentLng } = req.body;
+
+  const profile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+
+  if (!profile) throw new AppError('Driver profile not found.', 404);
+  if (profile.isRejected)
+    throw new AppError('Your application was not approved. Please contact support.', 403);
+  if (!profile.isApproved)
+    throw new AppError(
+      'Your profile is still under review. You will be notified once approved.',
+      403
+    );
+
+  // Fleet-linked drivers may only work while their fleet and vehicle are in good standing.
+  if (isOnline) await fleetService.assertDriverDispatchable(req.user.id);
+
+  // Nobody goes online (and so nobody is dispatched or shown on a map) without agreeing, on the CURRENT wording, to share location.
+  if (isOnline && !tracking.hasValidConsent(profile)) {
+    const e = new AppError('Please allow Runserv to share your live location before going online.', 403);
+    e.code = 'LOCATION_CONSENT_REQUIRED';
+    throw e;
+  }
+
+  if (!isOnline) {
+    const activeRide = await prisma.ride.findFirst({
+      where: {
+        driverId: req.user.id,
+        status: { in: ['ACCEPTED', 'ARRIVED', 'IN_PROGRESS'] },
+      },
+    });
+    if (activeRide)
+      throw new AppError('Cannot go offline with an active ride in progress.', 400);
+  }
+
+  const updatedProfile = await prisma.driverProfile.update({
+    where: { userId: req.user.id },
+    data: {
+      isOnline: Boolean(isOnline),
+      // Going offline erases the stored position, so a driver who is off duty is not on anyone's map.
+      currentLat: isOnline ? (currentLat ?? null) : null,
+      currentLng: isOnline ? (currentLng ?? null) : null,
+      lastLocationAt: isOnline && currentLat != null && currentLng != null ? new Date() : null,
+      ...(isOnline ? {} : { locationAccuracy: null, locationHeading: null }),
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `You are now ${isOnline ? 'online' : 'offline'}.`,
+    data: { profile: updatedProfile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/dispatch-status — "why am I not receiving jobs?"
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getDispatchStatus = async (req, res) => {
+  const profile = await prisma.driverProfile.findUnique({ where: { userId: req.user.id }, select: { isApproved: true, isRejected: true } });
+  const status = await fleetService.getDispatchStatus(req.user.id, { profile });
+  res.status(200).json({ success: true, data: status });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/earnings
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getEarnings = async (req, res) => {
+  const { startDate, endDate, period = 'all' } = req.query;
+
+  let dateFilter = {};
+  if (period === 'today') {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    dateFilter = { gte: today };
+  } else if (period === 'week') {
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    dateFilter = { gte: weekAgo };
+  } else if (period === 'month') {
+    const monthAgo = new Date();
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+    dateFilter = { gte: monthAgo };
+  } else if (startDate && endDate) {
+    dateFilter = { gte: new Date(startDate), lte: new Date(endDate) };
+  }
+
+  const rides = await prisma.ride.findMany({
+    where: {
+      driverId: req.user.id,
+      status: 'COMPLETED',
+      ...(Object.keys(dateFilter).length > 0 && { completedAt: dateFilter }),
+    },
+    include: {
+      payment: {
+        select: { amount: true, method: true, driverEarnings: true, platformFee: true },
+      },
+    },
+    orderBy: { completedAt: 'desc' },
+  });
+
+  let totalGross = 0;
+  let totalNetEarnings = 0;
+  let totalPlatformFee = 0;
+
+  for (const r of rides) {
+    totalGross += r.actualFare ?? 0;
+    totalNetEarnings += r.payment?.driverEarnings ?? 0;
+    totalPlatformFee += r.payment?.platformFee ?? 0;
+  }
+
+  const wallet = await prisma.wallet.findUnique({
+    where: { userId: req.user.id },
+    select: { balance: true, currency: true },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totalEarnings: totalGross.toFixed(2),
+      netEarnings: totalNetEarnings.toFixed(2),
+      platformFee: totalPlatformFee.toFixed(2),
+      walletBalance: wallet?.balance?.toFixed(2) || '0.00',
+      totalRides: rides.length,
+      averagePerRide:
+        rides.length > 0 ? (totalNetEarnings / rides.length).toFixed(2) : '0.00',
+      currency: wallet?.currency ?? 'NGN',
+      period,
+      rides: rides.map((r) => ({
+        id: r.id,
+        completedAt: r.completedAt,
+        grossFare: r.actualFare,
+        driverEarnings: r.payment?.driverEarnings,
+        platformFee: r.payment?.platformFee,
+        paymentMethod: r.payment?.method,
+        pickupAddress: r.pickupAddress,
+        dropoffAddress: r.dropoffAddress,
+      })),
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/stats
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getStats = async (req, res) => {
+  const profile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+  if (!profile) throw new AppError('Driver profile not found', 404);
+
+  const [completedRides, cancelledRides, totalRides] = await Promise.all([
+    prisma.ride.count({ where: { driverId: req.user.id, status: 'COMPLETED' } }),
+    prisma.ride.count({ where: { driverId: req.user.id, status: 'CANCELLED' } }),
+    prisma.ride.count({ where: { driverId: req.user.id } }),
+  ]);
+
+  const ratings = await prisma.rating.findMany({
+    where: { ride: { driverId: req.user.id } },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totalRides: profile.totalRides,
+      completedRides,
+      cancelledRides,
+      rating: profile.rating.toFixed(2),
+      totalRatings: ratings.length,
+      acceptanceRate:
+        totalRides > 0 ? ((completedRides / totalRides) * 100).toFixed(2) : '0.00',
+      cancellationRate:
+        totalRides > 0 ? ((cancelledRides / totalRides) * 100).toFixed(2) : '0.00',
+      isOnline: profile.isOnline,
+      isApproved: profile.isApproved,
+      vehicleInfo: {
+        type: profile.vehicleType,
+        make: profile.vehicleMake,
+        model: profile.vehicleModel,
+        year: profile.vehicleYear,
+        plate: profile.vehiclePlate,
+        color: profile.vehicleColor,
+        numberOfSeats: profile.numberOfSeats,
+        subType: profile.vehicleSubType,
+      },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/nearby-requests
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getNearbyRequests = async (req, res) => {
+  const profile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+
+  if (!profile) throw new AppError('Driver profile not found', 404);
+  if (!profile.isOnline) throw new AppError('You must be online to see requests', 400);
+  if (profile.currentLat == null || profile.currentLng == null)
+    throw new AppError('Current location not set', 400);
+
+  const requestedRides = await prisma.ride.findMany({
+    where: { status: 'REQUESTED' },
+    include: {
+      customer: {
+        select: {
+          firstName: true,
+          lastName: true,
+          profileImage: true,
+          phone: true,
+        },
+      },
+    },
+    take: 10,
+    orderBy: { requestedAt: 'desc' },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      requests: requestedRides,
+      driverLocation: { lat: profile.currentLat, lng: profile.currentLng },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/drivers/documents — upload / refresh document URLs
+// ─────────────────────────────────────────────────────────────────────────────
+exports.uploadDocuments = async (req, res) => {
+  const profile = await prisma.driverProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+  if (!profile) throw new AppError('Driver profile not found.', 404);
+
+  // Build update payload from any recognised document field
+  const updateData = { documentsUploadedAt: new Date() };
+  const licenceImageReplaced = req.body.licenseImageUrl !== undefined && String(req.body.licenseImageUrl).trim() !== '';
+
+  for (const { field } of DRIVER_DOC_FIELDS) {
+    const val = req.body[field];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      updateData[field] = String(val).trim();
+    }
+  }
+
+  // Must have uploaded at least one actual document URL
+  const uploadedCount = Object.keys(updateData).filter((k) => k !== 'documentsUploadedAt').length;
+  if (uploadedCount === 0)
+    throw new AppError('At least one document URL is required.', 400);
+
+  const updatedProfile = await prisma.driverProfile.update({
+    where: { userId: req.user.id },
+    data: { ...updateData, ...(licenceImageReplaced && { licenseVerificationStatus: 'UNVERIFIED', licenseVerifiedAt: null, licenseVerifiedById: null }) },
+  });
+
+  // Figure out which docs were uploaded for the notification message
+  const uploadedLabels = DRIVER_DOC_FIELDS
+    .filter(({ field }) => updateData[field])
+    .map(({ label }) => label)
+    .join(', ');
+
+  await notificationService.notify({
+    userId: req.user.id,
+    title: 'Documents Uploaded ✅',
+    message: `Received: ${uploadedLabels}. Our team will review them shortly.`,
+    type: 'documents_uploaded',
+    data: { profileId: profile.id },
+  });
+
+  const admins = await prisma.user.findMany({
+    where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId: a.id,
+        title: 'Driver Documents Uploaded 📄',
+        message: `${req.user.firstName} ${req.user.lastName} uploaded: ${uploadedLabels}.`,
+        type: 'driver_documents_uploaded',
+        data: {
+          driverUserId: req.user.id,
+          driverProfileId: profile.id,
+          documents: Object.keys(updateData).filter((k) => k !== 'documentsUploadedAt'),
+        },
+      })
+    )
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Documents uploaded. An admin will review your application.',
+    data: { profile: updatedProfile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/drivers/payout/request
+// ─────────────────────────────────────────────────────────────────────────────
+exports.requestPayout = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { amount, accountNumber, bankCode, accountName, mobileNumber } = req.body;
+
+  const requester = await prisma.user.findUnique({ where: { id: req.user.id }, select: { countryCode: true } });
+  const country = await getCountryForUser(requester);
+
+  // Min / max / fee / on-off are per-country settings (Admin → Countries).
+  // Wallet is debited plan.gross; the provider is sent plan.net.
+  const plan = await countrySettingsService.planWithdrawal({
+    countryCode: country.code, role: 'DRIVER', amount, currency: country.currencyCode,
+  });
+
+  const payoutMethods = country.payoutMethods;
+
+  // A market is payout-capable once it has at least one real rail. Markets
+  // still on UNSUPPORTED fail clearly here rather than sending an
+  // unroutable account number into a provider's verify API, which would
+  // either error confusingly or resolve to the wrong account.
+  if (!payoutMethods.some(m => m !== 'UNSUPPORTED')) {
+    throw new AppError(
+      `Payouts for ${country.name} aren't supported yet. Contact support.`,
+      400
+    );
+  }
+
+  const isOrangePayout = payoutMethods.includes('ORANGE_MONEY');
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!wallet) throw new AppError('Wallet not found', 404);
+  if (wallet.balance < amount) throw new AppError('Insufficient wallet balance', 400);
+  const withdrawable = await require('../utils/walletHelpers').getWithdrawableBalance(wallet);
+  if (withdrawable < amount) {
+    throw new AppError(`You can withdraw up to ${formatMoney(withdrawable, wallet.currency)}. The rest is an onboarding bonus usable only for accepting jobs.`, 400);
+  }
+
+  // ── Resolve the destination per rail ──────────────────────────────────────
+  // Orange markets pay out to an Orange Money wallet, so the destination is
+  // an MSISDN with no bank code and no name lookup (Orange exposes no
+  // subscriber-name endpoint). Bank markets keep the NUBAN verify untouched.
+  let destination, resolvedBankCode, resolvedAccountName, resolvedPayoutMethod, payoutDetails;
+
+  if (isOrangePayout) {
+    const raw = mobileNumber || accountNumber;
+    if (!raw) throw new AppError('Your Orange Money number is required', 400);
+    if (!orangeService.isValidMsisdn(raw, country.code)) {
+      throw new AppError('That does not look like a valid Orange Money number for your country.', 400);
+    }
+    destination          = orangeService.normalizeMsisdn(raw, country.code);
+    resolvedBankCode     = 'ORANGE_MONEY';
+    resolvedAccountName  = accountName || `${req.user.firstName} ${req.user.lastName}`.trim();
+    resolvedPayoutMethod = 'ORANGE_MONEY';
+    payoutDetails        = { rail: 'ORANGE_MONEY', msisdn: destination, countryCode: country.code, autoSettle: orangeService.isB2CEnabled() };
+  } else {
+    if (!accountNumber || !bankCode) throw new AppError('Account number and bank code are required', 400);
+
+    const accountVerify = await paymentService
+      .verifyBankAccountUnified(accountNumber, bankCode, country.code, country)
+      .catch(() => null);
+    if (!accountVerify)
+      throw new AppError('Unable to verify bank account. Please check details.', 400);
+
+    destination          = accountNumber;
+    resolvedBankCode     = bankCode;
+    resolvedAccountName  = accountName || accountVerify.account_name;
+    resolvedPayoutMethod = payoutMethods.find(m => m !== 'UNSUPPORTED' && m !== 'MANUAL') || 'NG_BANK_TRANSFER';
+    payoutDetails        = { rail: resolvedPayoutMethod, accountNumber, bankCode, accountName: resolvedAccountName, countryCode: country.code };
+  }
+
+  const reference = `WD-${Date.now()}-${req.user.id.slice(0, 6)}`;
+
+  // ← CHANGED — capture the transaction results (was previously discarded)
+  // so we can attach the created Payout's id to the audit log entry below.
+  const [, , payoutRecord] = await prisma.$transaction(async (tx) => {
+    await debitWallet(tx, { userId: req.user.id }, amount);
+    const _r = [null];
+    _r.push(await tx.walletTransaction.create({
+      data: {
+        walletId: wallet.id,
+        type: 'WITHDRAWAL',
+        amount,
+        description: `Withdrawal request to ${resolvedAccountName} — ${destination} (${resolvedBankCode})`,
+        status: 'PENDING',
+        reference,
+        provider: isOrangePayout ? 'orange' : paymentService.getActivePayoutProvider(),
+      },
+    }));
+    _r.push(await tx.payout.create({
+      data: {
+        userId: req.user.id,
+        amount: plan.net,
+        // Stored in the driver's own currency so admin screens don't have to
+        // guess which market a payout belongs to.
+        currency: wallet.currency,
+        accountNumber: destination,
+        bankCode: resolvedBankCode,
+        accountName: resolvedAccountName,
+        status: 'PENDING',
+        reference,
+        payoutMethod: resolvedPayoutMethod,
+        payoutDetails: { ...payoutDetails, grossAmount: plan.gross, fee: plan.fee },
+      },
+    }));
+    return _r;
+  });
+
+  // ← ADDED — payout requests move money out of the platform; worth a
+  // dedicated audit trail entry distinct from the WalletTransaction row,
+  // which support/admin staff don't always think to check.
+  logActivity({
+    userId:     req.user.id,
+    action:     'payout_requested',
+    entityType: 'Payout',
+    entityId:   payoutRecord.id,
+    details: {
+      role:          'DRIVER',
+      amount,
+      bankCode: resolvedBankCode,
+      accountNumber: `****${String(destination).slice(-4)}`,
+      reference,
+    },
+    req,
+  });
+
+  await notificationService.notify({
+    userId: req.user.id,
+    title: 'Withdrawal Requested 🏦',
+    message: `${formatMoney(amount, wallet.currency)} withdrawal to ${resolvedAccountName} is pending admin review.`,
+    type: notificationService.TYPES.WALLET_WITHDRAWAL,
+    data: {
+      amount,
+      accountNumber: `****${String(destination).slice(-4)}`,
+      bankCode: resolvedBankCode,
+      reference,
+    },
+  });
+
+  const admins = await prisma.user.findMany({
+    where: { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId: a.id,
+        title: 'New Withdrawal Request 💸',
+        message: `${req.user.firstName} ${req.user.lastName} (Driver) → ${resolvedAccountName}: ${formatMoney(amount, wallet.currency)}`,
+        type: 'withdrawal_pending',
+        data: { reference, userId: req.user.id, amount },
+      })
+    )
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal request submitted. Our team will process it within 1–2 business days.',
+    data: { reference, amount },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/drivers/payout/history
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getPayoutHistory = async (req, res) => {
+  const { page = 1, limit = 10, status } = req.query;
+  const skip = (page - 1) * limit;
+  const where = { userId: req.user.id, ...(status && { status }) };
+
+  const [payouts, total] = await Promise.all([
+    prisma.payout.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: parseInt(skip, 10),
+      take: parseInt(limit, 10),
+    }),
+    prisma.payout.count({ where }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      payouts,
+      pagination: { total, page: parseInt(page, 10), pages: Math.ceil(total / limit) },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/drivers/floor-price
+// ────────────────────────────────────────────────────────────────────────────
+exports.setFloorMultiplier = async (req, res) => {
+  const { floorMultiplier } = req.body;
+  const multiplier = parseFloat(floorMultiplier);
+
+  if (isNaN(multiplier) || multiplier < 1.0 || multiplier > 1.30)
+    throw new AppError(
+      'Floor multiplier must be between 1.0 (no floor) and 1.30 (+30% max)',
+      400
+    );
+
+  const profile = await prisma.driverProfile.update({
+    where: { userId: req.user.id },
+    data:  { floorMultiplier: multiplier },
+  });
+
+  const pctAbove = Math.round((multiplier - 1) * 100);
+  res.status(200).json({
+    success: true,
+    message: pctAbove === 0
+      ? 'Floor price removed — you will accept base fare.'
+      : `Floor price set to +${pctAbove}% above base fare.`,
+    data: { floorMultiplier: profile.floorMultiplier },
+  });
+};
+
+module.exports = exports;

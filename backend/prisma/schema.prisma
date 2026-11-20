@@ -1,0 +1,1975 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id                   String                  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  email                String                  @unique
+  // Nullable: people who sign up with Google add their phone number afterwards.
+  phone                String?                 @unique
+  password             String
+  authProvider         String                  @default("PASSWORD")
+  googleId             String?                 @unique
+  firstName            String
+  lastName             String
+  role                 UserRole                @default(CUSTOMER)
+  profileImage         String?
+  isVerified           Boolean                 @default(false)
+  isActive             Boolean                 @default(true)
+  isSuspended          Boolean                 @default(false)
+  suspendedAt          DateTime?
+  suspendedBy          String?
+  suspensionReason     String?
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+  emailVerifyToken     String?
+  emailVerifyExpires   DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @default(now()) @updatedAt
+  adminDepartment      String?
+  countryCode          String                  @default("NG")
+  locale               String?
+  // Support staff coverage. Empty = covers everything.
+  supportCountries     String[]                @default([])
+  supportLanguages     String[]                @default([])
+  twoFactorEnabled     Boolean                 @default(false)
+  twoFactorMethod      String?
+  passwordChangedAt    DateTime?               @db.Timestamptz(6)
+  // Staff two-step sign-in (authenticator app). The secret is stored encrypted; backup codes only as hashes.
+  mfaEnabled           Boolean                 @default(false)
+  mfaSecretEnc         String?
+  mfaBackupHashes      String[]
+  mfaLastStep          Int?
+  mfaEnrolledAt        DateTime?               @db.Timestamptz(6)
+  isDeleted            Boolean                 @default(false)
+  deletedAt            DateTime?               @db.Timestamptz(6)
+  activityLogs         ActivityLog[]
+  adminProfile         AdminProfile?
+  appFeedback          AppFeedback[]
+  commissions          CommissionLedger[]      @relation("CommissionEarner")
+  ownedCompanies       Company[]               @relation("CompanyOwner")
+  companyEmployments   CompanyEmployee[]       @relation("CompanyEmployees")
+  customerDeliveries   Delivery[]              @relation("CustomerDeliveries")
+  partnerDeliveries    Delivery[]              @relation("PartnerDeliveries")
+  deliveryProfile      DeliveryPartnerProfile?
+  driverProfile        DriverProfile?
+  notifications        Notification[]
+  otpVerifications     OtpVerification[]
+  payments             Payment[]
+  payouts              Payout[]
+  ratings              Rating[]
+  customerRides        Ride[]                  @relation("CustomerRides")
+  driverRides          Ride[]                  @relation("DriverRides")
+  orgPayouts           OrgPayout[]
+  supportTickets       SupportTicket[]
+  ticketReplies        TicketReply[]           @relation("TicketReplyAuthor")
+  receivedTransfers    Transfer[]              @relation("ReceivedTransfers")
+  sentTransfers        Transfer[]              @relation("SentTransfers")
+  wallet               Wallet?
+
+  // Runserv fleet and bank-partnership relations (additive extension)
+  ownedFleetPartners      FleetPartner[]          @relation("FleetPartnerOwner")
+  fleetPartnerMemberships FleetPartnerUser[]
+  fleetDriverAssignments  FleetDriverAssignment[] @relation("FleetDriverUser")
+  fleetTrips              FleetTrip[]             @relation("FleetTripDriver")
+  createdBankCampaigns    BankCampaign[]          @relation("BankCampaignCreator")
+  bankOfferClicks         BankOfferClick[]        @relation("BankOfferClickUser")
+  bankReferrals           BankReferral[]          @relation("BankReferralUser")
+  bankRedemptions         BankRedemption[]        @relation("BankRedemptionUser")
+
+  @@index([email])
+  @@index([phone])
+  @@index([role])
+  @@index([isActive])
+  @@index([adminDepartment])
+  @@index([isDeleted])
+  @@index([countryCode])
+}
+
+model OtpVerification {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String
+  code      String
+  purpose   String
+  tempToken String   @unique
+  attempts  Int      @default(0)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tempToken])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model DriverProfile {
+  id                        String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                    String      @unique
+  licenseNumber             String      @unique
+  // M13: licence eligibility (class, expiry and a reviewer's verification), enforced at approval, assignment, go-online and accept.
+  licenseClass              String?
+  licenseExpiresAt          DateTime?   @db.Date
+  licenseVerificationStatus String      @default("UNVERIFIED")
+  licenseVerifiedAt         DateTime?
+  licenseVerifiedById       String?
+  licenseRejectedReason     String?
+  vehicleType               VehicleType
+  vehicleMake               String
+  vehicleModel              String
+  vehicleYear               Int
+  vehicleColor              String
+  vehiclePlate              String      @unique
+  isApproved                Boolean     @default(false)
+  isOnline                  Boolean     @default(false)
+  currentLat                Float?
+  currentLng                Float?
+  locationConsentAt         DateTime?
+  locationConsentVersion    String?
+  locationConsentRevokedAt  DateTime?
+  lastLocationAt            DateTime?
+  locationAccuracy          Float?
+  locationHeading           Float?
+  totalRides                Int         @default(0)
+  rating                    Float       @default(0)
+  createdAt                 DateTime    @default(now())
+  updatedAt                 DateTime    @default(now()) @updatedAt
+  preferredFloorPrice       Decimal?    @db.Decimal(14, 2)
+  insuranceUrl              String?     @map("insurance_url")
+  licenseImageUrl           String?     @map("license_image_url")
+  vehicleRegUrl             String?     @map("vehicle_reg_url")
+  approvedAt                DateTime?
+  approvedBy                String?
+  documentsUploadedAt       DateTime?
+  isRejected                Boolean     @default(false)
+  rejectedAt                DateTime?
+  rejectedBy                String?
+  rejectionReason           String?
+  floorMultiplier           Float       @default(1.0)
+  applicantPhotoUrl         String?     @map("applicant_photo_url")
+  govtIdUrl                 String?     @map("govt_id_url")
+  proofOfAddressUrl         String?     @map("proof_of_address_url")
+  roadWorthinessUrl         String?     @map("road_worthiness_url")
+  vehicleInspectionUrl      String?     @map("vehicle_inspection_url")
+  hackneyCertUrl            String?     @map("hackney_cert_url")
+  vehiclePhotoExteriorUrl   String?     @map("vehicle_photo_exterior_url")
+  vehiclePhotoInteriorUrl   String?     @map("vehicle_photo_interior_url")
+  riderCardUrl              String?     @map("rider_card_url")
+  helmetPhotoUrl            String?     @map("helmet_photo_url")
+  dispatchPermitUrl         String?     @map("dispatch_permit_url")
+  guarantorLetterUrl        String?     @map("guarantor_letter_url")
+  guarantorIdUrl            String?     @map("guarantor_id_url")
+  numberOfSeats             Int?        @map("number_of_seats")
+  vehicleSubType            String?     @map("vehicle_sub_type")
+  payloadCapacityKg         Float?      @map("payload_capacity_kg")
+  user                      User        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([isApproved])
+  @@index([isRejected])
+  @@index([isOnline, currentLat, currentLng])
+}
+
+model DeliveryPartnerProfile {
+  id                       String      @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                   String      @unique
+  vehicleType              VehicleType
+  vehiclePlate             String?
+  idImageUrl               String?
+  vehicleImageUrl          String?
+  isApproved               Boolean     @default(false)
+  isOnline                 Boolean     @default(false)
+  currentLat               Float?
+  currentLng               Float?
+  locationConsentAt        DateTime?
+  locationConsentVersion   String?
+  locationConsentRevokedAt DateTime?
+  lastLocationAt           DateTime?
+  locationAccuracy         Float?
+  locationHeading          Float?
+  totalDeliveries          Int         @default(0)
+  rating                   Float       @default(0)
+  createdAt                DateTime    @default(now())
+  updatedAt                DateTime    @default(now()) @updatedAt
+  preferredFloorPrice      Decimal?    @db.Decimal(14, 2)
+  approvedAt               DateTime?
+  approvedBy               String?
+  documentsUploadedAt      DateTime?
+  isRejected               Boolean     @default(false)
+  rejectedAt               DateTime?
+  rejectedBy               String?
+  rejectionReason          String?
+  floorMultiplier          Float       @default(1.0)
+  applicantPhotoUrl        String?     @map("applicant_photo_url")
+  govtIdUrl                String?     @map("govt_id_url")
+  proofOfAddressUrl        String?     @map("proof_of_address_url")
+  insuranceUrl             String?     @map("insurance_url")
+  roadWorthinessUrl        String?     @map("road_worthiness_url")
+  vehiclePhotoExteriorUrl  String?     @map("vehicle_photo_exterior_url")
+  vehiclePhotoInteriorUrl  String?     @map("vehicle_photo_interior_url")
+  dispatchPermitUrl        String?     @map("dispatch_permit_url")
+  guarantorLetterUrl       String?     @map("guarantor_letter_url")
+  guarantorIdUrl           String?     @map("guarantor_id_url")
+  riderCardUrl             String?     @map("rider_card_url")
+  helmetPhotoUrl           String?     @map("helmet_photo_url")
+  operatorPermitUrl        String?     @map("operator_permit_url")
+  numberOfSeats            Int?        @map("number_of_seats")
+  vehicleSubType           String?     @map("vehicle_sub_type")
+  user                     User        @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([isApproved])
+  @@index([isRejected])
+  @@index([isOnline, currentLat, currentLng])
+}
+
+model Ride {
+  id                 String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  customerId         String
+  driverId           String?
+  pickupAddress      String
+  pickupLat          Float
+  pickupLng          Float
+  pickupSource       String?
+  pickupAccuracyM    Float?
+  pickupCapturedAt   DateTime?
+  dropoffAddress     String
+  dropoffLat         Float
+  dropoffLng         Float
+  status             RideStatus     @default(REQUESTED)
+  distance           Float?
+  duration           Int?
+  estimatedFare      Decimal        @db.Decimal(14, 2)
+  currency           String         @default("NGN")
+  actualFare         Decimal?       @db.Decimal(14, 2)
+  promoCode          String?
+  requestedAt        DateTime       @default(now())
+  acceptedAt         DateTime?
+  arrivedAt          DateTime?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  notes              String?
+  // The rider\'s own choice when requesting (CASH or WALLET). The driver cannot change it at completion.
+  paymentMethod      String         @default("CASH")
+  cancellationReason String?
+  isCorporate        Boolean        @default(false)
+  // Who pays for this ride. ORGANIZATION = billed to `companyId` on its monthly invoice
+  // (the driver needs no wallet balance to accept it).
+  payerType          RidePayer      @default(SELF)
+  companyId          String?
+  corporateTrip      CorporateTrip?
+  payment            Payment?
+  rating             Rating?
+  customer           User           @relation("CustomerRides", fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  driver             User?          @relation("DriverRides", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([customerId])
+  @@index([driverId])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([isCorporate])
+  @@index([companyId])
+}
+
+model Delivery {
+  id                 String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  customerId         String
+  partnerId          String?
+  pickupAddress      String
+  pickupLat          Float
+  pickupLng          Float
+  pickupSource       String?
+  pickupAccuracyM    Float?
+  pickupCapturedAt   DateTime?
+  pickupContact      String
+  dropoffAddress     String
+  dropoffLat         Float
+  dropoffLng         Float
+  dropoffContact     String
+  packageDescription String
+  packageWeight      Float?
+  packageValue       Decimal?       @db.Decimal(14, 2)
+  status             DeliveryStatus @default(PENDING)
+  distance           Float?
+  estimatedFee       Decimal        @db.Decimal(14, 2)
+  currency           String         @default("NGN")
+  actualFee          Decimal?       @db.Decimal(14, 2)
+  deliveryImageUrl   String?
+  recipientName      String?
+  recipientSignature String?
+  promoCode          String?
+  requestedAt        DateTime       @default(now())
+  assignedAt         DateTime?
+  pickedUpAt         DateTime?
+  deliveredAt        DateTime?
+  cancelledAt        DateTime?
+  notes              String?
+  // The rider\'s own choice when requesting (CASH or WALLET). The driver cannot change it at completion.
+  paymentMethod      String         @default("CASH")
+  cancellationReason String?
+  inTransitAt        DateTime?      @db.Timestamptz(6)
+  isCorporate        Boolean        @default(false)
+  payerType          RidePayer      @default(SELF)
+  companyId          String?
+  corporateTrip      CorporateTrip?
+  customer           User           @relation("CustomerDeliveries", fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  partner            User?          @relation("PartnerDeliveries", fields: [partnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payment            Payment?
+  rating             Rating?
+
+  @@index([customerId])
+  @@index([partnerId])
+  @@index([status])
+  @@index([requestedAt])
+  @@index([isCorporate])
+  @@index([companyId])
+}
+
+model Payment {
+  id               String            @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId           String
+  rideId           String?           @unique
+  deliveryId       String?           @unique
+  amount           Decimal           @db.Decimal(14, 2)
+  currency         String            @default("NGN")
+  method           PaymentMethod
+  status           PaymentStatus     @default(PENDING)
+  transactionId    String?           @unique
+  receiptUrl       String?
+  platformFee      Decimal?          @db.Decimal(14, 2)
+  driverEarnings   Decimal?          @db.Decimal(14, 2)
+  refundAmount     Decimal?          @db.Decimal(14, 2)
+  refundedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @default(now()) @updatedAt
+  provider         String?
+  // Orange Money pay_token (see WalletTransaction.providerRef)
+  providerRef      String?
+  commissionLedger CommissionLedger?
+  delivery         Delivery?         @relation(fields: [deliveryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ride             Ride?             @relation(fields: [rideId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user             User              @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Rating {
+  id         String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId     String
+  rideId     String?   @unique
+  deliveryId String?   @unique
+  rating     Int
+  comment    String?
+  createdAt  DateTime  @default(now())
+  delivery   Delivery? @relation(fields: [deliveryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ride       Ride?     @relation(fields: [rideId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user       User      @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model Wallet {
+  id           String              @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId       String              @unique
+  balance      Decimal             @default(0) @db.Decimal(14, 2)
+  currency     String              @default("NGN")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @default(now()) @updatedAt
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  transactions WalletTransaction[]
+
+  @@index([userId])
+}
+
+model WalletTransaction {
+  id          String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  walletId    String
+  type        WalletTxType
+  amount      Decimal      @db.Decimal(14, 2)
+  description String
+  status      String       @default("COMPLETED")
+  reference   String?      @unique
+  provider    String?
+  // Provider-side handle needed to verify this transaction later.
+  // For Orange Money this is the pay_token returned at checkout creation —
+  // Orange's /transactionstatus call requires it alongside order_id + amount.
+  providerRef String?
+  createdAt   DateTime     @default(now())
+  wallet      Wallet       @relation(fields: [walletId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([walletId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([provider])
+}
+
+model Payout {
+  id            String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId        String
+  amount        Decimal      @db.Decimal(14, 2)
+  currency      String       @default("NGN")
+  status        PayoutStatus @default(PENDING)
+  accountNumber String
+  bankCode      String
+  accountName   String
+  reference     String?      @unique
+  recipientCode String?
+  transferCode  String?
+  transferError String?
+  processedAt   DateTime?
+  failureReason String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+  bankName      String?
+  payoutMethod  String?      @default("NG_BANK_TRANSFER")
+  payoutDetails Json?
+  user          User         @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Transfer {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  reference   String   @unique
+  senderId    String
+  recipientId String
+  amount      Decimal  @db.Decimal(14, 2)
+  note        String?
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  recipient   User     @relation("ReceivedTransfers", fields: [recipientId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sender      User     @relation("SentTransfers", fields: [senderId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([senderId])
+  @@index([recipientId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AdminProfile {
+  id          String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId      String    @unique
+  permissions Json
+  department  String?
+  lastLoginAt DateTime?
+  loginCount  Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+}
+
+model Notification {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String
+  title     String
+  message   String
+  type      String
+  data      Json?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+model ActivityLog {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId     String?
+  action     String
+  entityType String
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+model SystemSettings {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  key         String   @unique
+  value       Json
+  category    String
+  description String?
+  updatedBy   String?
+  updatedAt   DateTime @default(now()) @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([category])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUNTRY — per-market configuration. Not a strict FK on User.countryCode
+// yet (kept as a plain indexed string on User for now) so this table can be
+// introduced without requiring every existing user row to already match a
+// seeded Country record.
+// ─────────────────────────────────────────────────────────────────────────
+model Country {
+  id               String  @id @default(dbgenerated("(gen_random_uuid())::text"))
+  code             String  @unique // ISO 3166-1 alpha-2, e.g. "NG", "GH", "KE"
+  name             String
+  currencyCode     String // ISO 4217, e.g. "NGN", "GHS", "KES"
+  currencySymbol   String
+  defaultLocale    String // e.g. "en-NG", "fr-CI"
+  phoneDialCode    String // e.g. "+234"
+  isActive         Boolean @default(true)
+  paymentProviders Json // e.g. ["paystack","flutterwave"] or ["orange"] in priority order
+  payoutMethod     String  @default("NG_BANK_TRANSFER") // legacy single-value column, kept for back-compat
+
+  // ── Multi-provider / Orange support ──────────────────────────────────────
+  // Which credit (top-up / charge) methods this market offers. Subset of
+  // CASH | WALLET | PAYSTACK | FLUTTERWAVE | ORANGE_MONEY. Null on rows
+  // created before this migration — country.service derives a sensible
+  // default from paymentProviders in that case.
+  creditMethods  Json?
+  // Subset of NG_BANK_TRANSFER | BANK_TRANSFER | ORANGE_MONEY | MANUAL | UNSUPPORTED
+  payoutMethods  Json?
+  // Per-provider secrets/overrides, e.g.
+  // { "orange": { "merchantKey": "...", "webpayCountry": "ci", "lang": "fr" } }
+  providerConfig Json?
+  // App language this country defaults to, e.g. "fr". Independent of
+  // currency, and overridden by the user's own saved language choice.
+  languageCode   String?
+
+  // ── Map centre ───────────────────────────────────────────────────────────
+  // Where this market's maps open until the phone's GPS answers, and where
+  // address search is biased when the app sends no coordinates. Set per country
+  // from the admin Countries page, so a new market never falls back to
+  // another country's city.
+  mapCenterLat  Float?
+  mapCenterLng  Float?
+  mapCenterCity String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// COUNTRY SETTING — per-market overrides for pricing, commission, wallet,
+// payout and bonus rules. Keys deliberately reuse the SystemSettings key
+// names (ride_base_fare_car, platform_commission_rides, wallet_topup_min…)
+// so the resolution order is simply:
+//     CountrySetting(country, key)  →  SystemSettings(key)  →  built-in default
+// A row here means "this country has its own value"; deleting the row makes
+// the country inherit again. See services/countrySettings.service.js.
+// ─────────────────────────────────────────────────────────────────────────
+model CountrySetting {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  countryCode String
+  key         String
+  value       Json
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@unique([countryCode, key])
+  @@index([countryCode])
+}
+
+model PromoCode {
+  id                String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  code              String   @unique
+  description       String?
+  discountType      String
+  discountValue     Float
+  maxUses           Int?
+  currentUses       Int      @default(0)
+  maxUsesPerUser    Int      @default(1)
+  minPurchaseAmount Decimal? @db.Decimal(14, 2)
+  validFrom         DateTime
+  validUntil        DateTime
+  isActive          Boolean  @default(true)
+  applicableFor     String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([code])
+  @@index([isActive])
+}
+
+model SupportTicket {
+  id           String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId       String
+  ticketNumber String        @unique
+  subject      String
+  description  String
+  category     String
+  priority     String        @default("medium")
+  status       String        @default("open")
+  assignedTo   String?
+  resolvedAt   DateTime?
+  resolution   String?
+  // Market + language when the ticket was opened (kept on the ticket so routing
+  // and reply language stay right even if the user later changes country/language).
+  countryCode  String        @default("NG")
+  language     String        @default("en")
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @default(now()) @updatedAt
+  user         User          @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies      TicketReply[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([createdAt])
+  @@index([countryCode])
+  @@index([language])
+}
+
+model TicketReply {
+  id        String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  ticketId  String
+  authorId  String
+  message   String
+  isAdmin   Boolean       @default(true)
+  createdAt DateTime      @default(now()) @db.Timestamptz(6)
+  author    User          @relation("TicketReplyAuthor", fields: [authorId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ticketId])
+  @@index([authorId])
+}
+
+model AppFeedback {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId     String
+  rating     Int
+  comment    String?
+  category   String
+  platform   String
+  appVersion String?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([userId])
+  @@index([rating])
+  @@index([createdAt])
+}
+
+model CommissionLedger {
+  id               String   @id @default(uuid())
+  paymentId        String   @unique
+  serviceType      String
+  rideId           String?
+  deliveryId       String?
+  earnerUserId     String
+  grossAmount      Decimal  @db.Decimal(14, 2)
+  bookingFee       Decimal  @default(0) @db.Decimal(14, 2)
+  commissionRate   Float
+  commissionAmount Decimal  @db.Decimal(14, 2)
+  earnerAmount     Decimal  @db.Decimal(14, 2)
+  surgeMultiplier  Float    @default(1.0)
+  currency         String   @default("NGN")
+  createdAt        DateTime @default(now())
+  earnerUser       User     @relation("CommissionEarner", fields: [earnerUserId], references: [id])
+  payment          Payment  @relation(fields: [paymentId], references: [id])
+
+  @@index([serviceType])
+  @@index([earnerUserId])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ORGANISATIONS — the Runserv enterprise product
+//
+//   Company            a business created and approved by Runserv. Has its own branded web
+//                      portal, a billing mode (prepaid / postpaid / hybrid) and a wallet.
+//   CompanyEmployee    a person's membership of a company. People stay ordinary Runserv
+//                      customers; they ask to be listed with their staff ID and HR approves
+//                      after checking the staff directory. Roles decide portal access.
+//   StaffDirectoryEntry the company's own staff list (uploaded by HR) used to verify requests.
+//   Department         belongs to a company: cost centre, budget, head (manager).
+//   ApprovalRequest    a manager's sign-off for a trip that needs approval.
+//   CorporateTrip      one org-paid ride/delivery: audit record + billing unit + payout unit.
+//   CompanyInvoice     the bill for the credit (postpaid) part of the month's trips.
+//   OrgPayout          what one driver/partner is paid for one invoice.
+// ─────────────────────────────────────────────────────────────────────────
+model Company {
+  id           String        @id @default(dbgenerated("(gen_random_uuid())::text"))
+  name         String
+  rcNumber     String?       @unique
+  email        String        @unique
+  phone        String
+  address      String?
+  // The first ORG_ADMIN. Further portal users are CompanyEmployee rows with a role.
+  ownerUserId  String
+  // Staff type this into the app to find the company, e.g. "RS-4K9Q2X".
+  orgCode      String        @unique
+  // The reference a company puts in its bank transfer narration to top up its Runserv wallet (matched automatically).
+  payReference String?       @unique
+  status       CompanyStatus @default(PENDING)
+
+  // ── Verification & credit ─────────────────────────────────────────────
+  verificationStatus  VerificationStatus @default(UNVERIFIED)
+  verifiedAt          DateTime?          @db.Timestamptz(6)
+  verifiedById        String?
+  verificationNotes   String?
+  // PREPAID is the default. POSTPAID / HYBRID can only be switched on for a VERIFIED company
+  // with an agreed creditLimit and signed terms.
+  billingMode         BillingMode        @default(PREPAID)
+  creditLimit         Decimal            @default(0) @db.Decimal(14, 2)
+  creditTermsSignedAt DateTime?          @db.Timestamptz(6)
+  paymentTermsDays    Int                @default(14)
+
+  // ── Commercials ───────────────────────────────────────────────────────
+  // Runserv's cut of each trip fare (0.18 = 18%); the rest is owed to the driver/partner.
+  commissionRate  Float   @default(0.18)
+  // Monthly platform/subscription fee, added to the company's invoice.
+  subscriptionFee Decimal @default(0) @db.Decimal(14, 2)
+  currency        String  @default("NGN")
+  timezone        String  @default("Africa/Lagos")
+  billingEmail    String?
+
+  // ── Prepaid wallet ────────────────────────────────────────────────────
+  walletBalance       Decimal @default(0) @db.Decimal(14, 2)
+  lowBalanceThreshold Decimal @default(0) @db.Decimal(14, 2)
+
+  // ── Ride policy (set by the company) ──────────────────────────────────
+  weekendPolicy      WeekendPolicy @default(APPROVAL_REQUIRED)
+  requireTripPurpose Boolean       @default(true)
+  allowDeliveries    Boolean       @default(true)
+  // Hard ceiling for one trip. null = none.
+  maxTripAmount      Decimal?      @db.Decimal(14, 2)
+  // Trips costing more than this need a manager's approval first. null = never.
+  approvalThreshold  Decimal?      @db.Decimal(14, 2)
+
+  // ── White label ───────────────────────────────────────────────────────
+  // Portal address: <slug>.business.runserv.org, or customDomain if set.
+  slug         String? @unique
+  customDomain String? @unique
+  brandName    String?
+  brandColor   String?
+  brandAccent  String?
+  logoUrl      String?
+  tagline      String?
+  supportEmail String?
+
+  createdAt       DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  owner           User                  @relation("CompanyOwner", fields: [ownerUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  members         CompanyEmployee[]
+  departments     Department[]
+  directory       StaffDirectoryEntry[]
+  trips           CorporateTrip[]
+  invoices        CompanyInvoice[]
+  weekendRequests WeekendRideRequest[]
+  approvals       ApprovalRequest[]
+  payouts         OrgPayout[]
+  walletTxs       OrgWalletTx[]
+
+  @@index([status])
+  @@index([ownerUserId])
+}
+
+// Ledger of the company's prepaid wallet. `amount` is signed (+ money in, − money out).
+model OrgWalletTx {
+  id           String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId    String
+  type         OrgWalletTxType
+  amount       Decimal         @db.Decimal(14, 2)
+  balanceAfter Decimal         @db.Decimal(14, 2)
+  description  String
+  reference    String?         @unique
+  tripId       String?
+  createdById  String?
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  company      Company         @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([companyId, createdAt])
+}
+
+model Department {
+  id                String                @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId         String
+  name              String
+  // Finance code that trips of this department are charged to.
+  costCenter        String
+  // Monthly transport budget for the department. null = no budget.
+  monthlyBudget     Decimal?              @db.Decimal(14, 2)
+  // Overrides of the company-wide policy for this department (null = inherit).
+  maxTripAmount     Decimal?              @db.Decimal(14, 2)
+  approvalThreshold Decimal?              @db.Decimal(14, 2)
+  // The manager (supervisor) who sees this department's costs and approves its trips.
+  headEmployeeId    String?
+  isActive          Boolean               @default(true)
+  createdAt         DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  company           Company               @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  head              CompanyEmployee?      @relation("DepartmentHead", fields: [headEmployeeId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  members           CompanyEmployee[]     @relation("DepartmentMembers")
+  directory         StaffDirectoryEntry[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+}
+
+// The company's own staff list, uploaded by HR. Join requests are checked against it.
+model StaffDirectoryEntry {
+  id                    String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId             String
+  staffNumber           String
+  fullName              String
+  email                 String?
+  phone                 String?
+  departmentId          String?
+  jobTitle              String?
+  // Staff number of this person's supervisor (resolved to a membership on approval).
+  supervisorStaffNumber String?
+  status                DirectoryStatus @default(ACTIVE)
+  exitedAt              DateTime?       @db.Timestamptz(6)
+  createdAt             DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  company               Company         @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  department            Department?     @relation(fields: [departmentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([companyId, staffNumber])
+  @@index([companyId, status])
+}
+
+model CompanyEmployee {
+  id                      String               @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId               String
+  userId                  String
+  role                    OrgRole              @default(STAFF)
+  // Staff ID the person gave when asking to join; checked by HR against the directory.
+  staffNumber             String?
+  // What the person typed as their department (HR assigns the real one on approval).
+  claimedDepartment       String?
+  departmentId            String?
+  // Direct supervisor (another membership).
+  supervisorId            String?
+  jobTitle                String?
+  directoryEntryId        String?
+  // EXACT | NAME_MISMATCH | NOT_FOUND | EXITED — computed when the request is made.
+  directoryMatch          String?
+  // Personal monthly allowance (<= 0 means none).
+  monthlyLimit            Decimal              @default(30000) @db.Decimal(14, 2)
+  isActive                Boolean              @default(true)
+  restrictToBusinessHours Boolean              @default(false)
+  requireTripPurpose      Boolean              @default(false)
+  inviteStatus            InviteStatus         @default(PENDING)
+  invitedAt               DateTime             @default(now()) @db.Timestamptz(6)
+  joinedAt                DateTime?            @db.Timestamptz(6)
+  joinSource              String               @default("STAFF_REQUEST")
+  requestedAt             DateTime?            @db.Timestamptz(6)
+  reviewedAt              DateTime?            @db.Timestamptz(6)
+  reviewedById            String?
+  reviewNote              String?
+  // Set when HR delists the person (resigned, terminated…). They remain a normal customer.
+  exitedAt                DateTime?            @db.Timestamptz(6)
+  exitReason              String?
+  delistedById            String?
+  createdAt               DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  company                 Company              @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user                    User                 @relation("CompanyEmployees", fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  department              Department?          @relation("DepartmentMembers", fields: [departmentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  headOf                  Department[]         @relation("DepartmentHead")
+  supervisor              CompanyEmployee?     @relation("Supervision", fields: [supervisorId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  reports                 CompanyEmployee[]    @relation("Supervision")
+  trips                   CorporateTrip[]
+  weekendRequests         WeekendRideRequest[]
+  approvalRequests        ApprovalRequest[]
+
+  @@unique([companyId, userId], map: "CompanyEmployee_unique")
+  @@index([companyId])
+  @@index([userId])
+  @@index([companyId, staffNumber], map: "CompanyEmployee_staffNo_idx")
+  @@index([departmentId])
+  @@index([supervisorId])
+}
+
+// A staff member asks for permission to ride on a specific Saturday/Sunday.
+model WeekendRideRequest {
+  id            String               @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId     String
+  employeeId    String
+  requestedDate DateTime             @db.Date
+  reason        String
+  status        WeekendRequestStatus @default(PENDING)
+  reviewedById  String?
+  reviewedAt    DateTime?            @db.Timestamptz(6)
+  reviewNote    String?
+  createdAt     DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  company       Company              @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee      CompanyEmployee      @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([companyId, status])
+  @@index([employeeId, requestedDate])
+}
+
+// Manager sign-off for a trip above the approval threshold. Approving does not book the trip:
+// it gives the staff member a single-use pass (until expiresAt) they redeem when booking.
+model ApprovalRequest {
+  id                 String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId          String
+  employeeId         String
+  departmentId       String?
+  // Who may decide it (the supervisor / department head); HR and ORG_ADMIN can decide too.
+  approverEmployeeId String?
+  serviceType        String          @default("RIDE")
+  pickupAddress      String
+  dropoffAddress     String
+  estimatedFare      Decimal         @db.Decimal(14, 2)
+  distanceKm         Float?
+  purpose            String?
+  purposeCategory    String?
+  // Why approval was needed, e.g. OVER_THRESHOLD.
+  reason             String
+  status             ApprovalStatus  @default(PENDING)
+  decidedById        String?
+  decidedAt          DateTime?       @db.Timestamptz(6)
+  decisionNote       String?
+  expiresAt          DateTime        @db.Timestamptz(6)
+  createdAt          DateTime        @default(now()) @db.Timestamptz(6)
+  company            Company         @relation(fields: [companyId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  employee           CompanyEmployee @relation(fields: [employeeId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([companyId, status])
+  @@index([employeeId, status])
+  @@index([approverEmployeeId, status])
+}
+
+model CorporateTrip {
+  id                   String              @id @default(dbgenerated("(gen_random_uuid())::text"))
+  rideId               String?             @unique
+  deliveryId           String?             @unique(map: "CorporateTrip_delId_key")
+  companyId            String
+  employeeId           String
+  // Snapshot at booking time, so history stays right when people move department.
+  departmentId         String?
+  costCenter           String?
+  supervisorEmployeeId String?
+  serviceType          String              @default("RIDE")
+  status               CorporateTripStatus @default(REQUESTED)
+  purposeCategory      String?
+  purpose              String?
+  // Estimated at request time, replaced by the final fare on completion.
+  fare                 Decimal             @db.Decimal(14, 2)
+  currency             String              @default("NGN")
+  distanceKm           Float?
+  commissionAmount     Decimal             @db.Decimal(14, 2)
+  driverEarnings       Decimal?            @db.Decimal(14, 2)
+  earnerUserId         String?
+  // How the fare was funded: wallet part is charged at completion, credit part goes on the invoice.
+  walletPaid           Decimal             @default(0) @db.Decimal(14, 2)
+  creditAmount         Decimal             @default(0) @db.Decimal(14, 2)
+  // How much of driverEarnings has already been credited to the driver's wallet.
+  driverPaidAmount     Decimal             @default(0) @db.Decimal(14, 2)
+  approvalRequestId    String?
+  weekendTrip          Boolean             @default(false)
+  weekendRequestId     String?
+  tripAt               DateTime            @default(now()) @db.Timestamptz(6)
+  completedAt          DateTime?           @db.Timestamptz(6)
+  auditStatus          TripAuditStatus     @default(UNREVIEWED)
+  auditNote            String?
+  auditedAt            DateTime?           @db.Timestamptz(6)
+  auditedById          String?
+  billedAt             DateTime?           @db.Timestamptz(6)
+  invoiceId            String?
+  payoutStatus         EarnerPayoutStatus  @default(ACCRUED)
+  orgPayoutId          String?
+  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
+  company              Company             @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  delivery             Delivery?           @relation(fields: [deliveryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  employee             CompanyEmployee     @relation(fields: [employeeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ride                 Ride?               @relation(fields: [rideId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  invoice              CompanyInvoice?     @relation(fields: [invoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgPayout            OrgPayout?          @relation(fields: [orgPayoutId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([companyId])
+  @@index([employeeId])
+  @@index([createdAt])
+  @@index([companyId, tripAt])
+  @@index([companyId, departmentId, tripAt])
+  @@index([status])
+  @@index([invoiceId])
+  @@index([earnerUserId, payoutStatus])
+}
+
+// The monthly bill. Covers the CREDIT part of the month's trips plus the subscription fee.
+model CompanyInvoice {
+  id                 String           @id @default(dbgenerated("(gen_random_uuid())::text"))
+  companyId          String
+  invoiceNumber      String           @unique
+  // The reference a company puts in its bank transfer narration to pay THIS invoice.
+  paymentReference   String?          @unique
+  period             String
+  periodStart        DateTime         @db.Timestamptz(6)
+  periodEnd          DateTime         @db.Timestamptz(6)
+  tripCount          Int              @default(0)
+  totalDistanceKm    Float            @default(0)
+  // Trips on credit (not already paid from the wallet).
+  tripsAmount        Decimal          @default(0) @db.Decimal(14, 2)
+  subscriptionAmount Decimal          @default(0) @db.Decimal(14, 2)
+  // What the company owes = tripsAmount + subscriptionAmount.
+  subtotal           Decimal          @default(0) @db.Decimal(14, 2)
+  amountPaid         Decimal          @default(0) @db.Decimal(14, 2)
+  platformFee        Decimal          @default(0) @db.Decimal(14, 2)
+  driverPayable      Decimal          @default(0) @db.Decimal(14, 2)
+  currency           String           @default("NGN")
+  status             InvoiceStatus    @default(ISSUED)
+  issuedAt           DateTime         @default(now()) @db.Timestamptz(6)
+  dueDate            DateTime         @db.Timestamptz(6)
+  paidAt             DateTime?        @db.Timestamptz(6)
+  notes              String?
+  driversSettledAt   DateTime?        @db.Timestamptz(6)
+  createdAt          DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+  company            Company          @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  trips              CorporateTrip[]
+  payouts            OrgPayout[]
+  payments           InvoicePayment[]
+
+  @@unique([companyId, period], map: "CompanyInvoice_company_period_key")
+  @@index([status])
+  @@index([dueDate])
+}
+
+// Reconciliation: every receipt against an invoice (invoices can be paid in parts).
+model InvoicePayment {
+  id           String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  invoiceId    String
+  amount       Decimal        @db.Decimal(14, 2)
+  method       String
+  reference    String?
+  receivedAt   DateTime       @default(now()) @db.Timestamptz(6)
+  recordedById String?
+  note         String?
+  invoice      CompanyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([invoiceId])
+}
+
+model OrgPayout {
+  id              String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String
+  companyId       String
+  invoiceId       String
+  period          String
+  tripCount       Int             @default(0)
+  distanceKm      Float           @default(0)
+  grossAmount     Decimal         @default(0) @db.Decimal(14, 2)
+  platformFee     Decimal         @default(0) @db.Decimal(14, 2)
+  netAmount       Decimal         @default(0) @db.Decimal(14, 2)
+  currency        String          @default("NGN")
+  status          OrgPayoutStatus @default(PENDING)
+  walletReference String?         @unique
+  paidAt          DateTime?       @db.Timestamptz(6)
+  createdAt       DateTime        @default(now()) @db.Timestamptz(6)
+  user            User            @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  company         Company         @relation(fields: [companyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  invoice         CompanyInvoice  @relation(fields: [invoiceId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  trips           CorporateTrip[]
+
+  @@unique([invoiceId, userId], map: "OrgPayout_invoice_user_key")
+  @@index([userId, status])
+  @@index([companyId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLEET PARTNERS
+// Fleet companies are separate from individual delivery partners. Fleet users
+// manage a company account; every driver and vehicle still requires verification.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model FleetPartner {
+  id                  String                  @id @default(uuid())
+  legalName           String
+  tradingName         String?
+  rcNumber            String?                 @unique
+  taxId               String?
+  email               String
+  phone               String
+  address             String?
+  countryCode         String                  @default("NG")
+  currency            String                  @default("NGN")
+  timezone            String                  @default("Africa/Lagos")
+  ownerUserId         String
+  status              FleetPartnerStatus      @default(PENDING)
+  verificationStatus  VerificationStatus      @default(UNVERIFIED)
+  verifiedAt          DateTime?               @db.Timestamptz(6)
+  verifiedById        String?
+  verificationNotes   String?
+  commissionRate      Decimal                 @default(0.10) @db.Decimal(7, 6)
+  settlementTermsDays Int                     @default(7)
+  payoutAccountName   String?
+  payoutBankCode      String?
+  payoutAccountNumber String?
+  payoutCurrency      String                  @default("NGN")
+  supportEmail        String?
+  createdAt           DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime                @updatedAt @db.Timestamptz(6)
+  owner               User                    @relation("FleetPartnerOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  members             FleetPartnerUser[]
+  vehicles            FleetVehicle[]
+  assignments         FleetDriverAssignment[]
+  trips               FleetTrip[]
+  settlements         FleetSettlement[]
+  documents           FleetPartnerDocument[]
+
+  @@index([status])
+  @@index([ownerUserId])
+  @@index([countryCode, status])
+}
+
+model FleetPartnerUser {
+  id             String           @id @default(uuid())
+  fleetPartnerId String
+  userId         String
+  role           FleetPartnerRole @default(VIEWER)
+  isActive       Boolean          @default(true)
+  invitedAt      DateTime         @default(now()) @db.Timestamptz(6)
+  acceptedAt     DateTime?        @db.Timestamptz(6)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(6)
+  fleetPartner   FleetPartner     @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([fleetPartnerId, userId])
+  @@index([userId, isActive])
+}
+
+model FleetVehicle {
+  id                  String                  @id @default(uuid())
+  fleetPartnerId      String
+  vehicleType         VehicleType
+  subType             String?
+  make                String
+  model               String
+  modelYear           Int?
+  colour              String?
+  registrationNumber  String                  @unique
+  seatingCapacity     Int?
+  payloadCapacityKg   Decimal?                @db.Decimal(10, 2)
+  status              FleetVehicleStatus      @default(PENDING)
+  isActive            Boolean                 @default(true)
+  insuranceExpiresAt  DateTime?               @db.Date
+  roadworthyExpiresAt DateTime?               @db.Date
+  permitExpiresAt     DateTime?               @db.Date
+  createdAt           DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime                @updatedAt @db.Timestamptz(6)
+  fleetPartner        FleetPartner            @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+  assignments         FleetDriverAssignment[]
+  trips               FleetTrip[]
+  documents           FleetPartnerDocument[]
+
+  @@index([fleetPartnerId, status])
+}
+
+model FleetDriverAssignment {
+  id             String                @id @default(uuid())
+  fleetPartnerId String
+  vehicleId      String
+  driverUserId   String
+  status         FleetAssignmentStatus @default(ACTIVE)
+  startsAt       DateTime              @default(now()) @db.Timestamptz(6)
+  endsAt         DateTime?             @db.Timestamptz(6)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(6)
+  fleetPartner   FleetPartner          @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+  vehicle        FleetVehicle          @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driver         User                  @relation("FleetDriverUser", fields: [driverUserId], references: [id], onDelete: Restrict)
+  // One ACTIVE assignment per vehicle and per driver is enforced by the partial
+  // unique indexes in prisma/sql/fleet_bank_partial_indexes.sql (Prisma cannot
+  // express partial unique indexes in the schema).
+
+  @@index([fleetPartnerId, status])
+  @@index([vehicleId, status])
+  @@index([driverUserId, status])
+}
+
+model FleetTrip {
+  id                 String          @id @default(uuid())
+  fleetPartnerId     String
+  driverUserId       String
+  vehicleId          String
+  rideId             String?         @unique
+  deliveryId         String?         @unique
+  serviceType        ServiceType
+  status             FleetTripStatus @default(OFFERED)
+  fareAmount         Decimal         @db.Decimal(14, 2)
+  platformFeeAmount  Decimal         @default(0) @db.Decimal(14, 2)
+  fleetNetAmount     Decimal         @default(0) @db.Decimal(14, 2)
+  currency           String          @default("NGN")
+  completedAt        DateTime?       @db.Timestamptz(6)
+  cancelledAt        DateTime?       @db.Timestamptz(6)
+  cancellationReason String?
+  externalReference  String?         @unique
+  createdAt          DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime        @updatedAt @db.Timestamptz(6)
+  fleetPartner       FleetPartner    @relation(fields: [fleetPartnerId], references: [id], onDelete: Restrict)
+  driver             User            @relation("FleetTripDriver", fields: [driverUserId], references: [id], onDelete: Restrict)
+  vehicle            FleetVehicle    @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+
+  @@index([fleetPartnerId, createdAt])
+  @@index([driverUserId, status])
+  @@index([vehicleId, status])
+  @@index([status, createdAt])
+}
+
+model FleetSettlement {
+  id                String               @id @default(uuid())
+  fleetPartnerId    String
+  periodStart       DateTime             @db.Timestamptz(6)
+  periodEnd         DateTime             @db.Timestamptz(6)
+  grossAmount       Decimal              @db.Decimal(14, 2)
+  platformFeeAmount Decimal              @default(0) @db.Decimal(14, 2)
+  adjustmentsAmount Decimal              @default(0) @db.Decimal(14, 2)
+  netAmount         Decimal              @db.Decimal(14, 2)
+  currency          String               @default("NGN")
+  status            BankSettlementStatus @default(PENDING)
+  reference         String?              @unique
+  paidAt            DateTime?            @db.Timestamptz(6)
+  createdAt         DateTime             @default(now()) @db.Timestamptz(6)
+  fleetPartner      FleetPartner         @relation(fields: [fleetPartnerId], references: [id], onDelete: Restrict)
+
+  @@index([fleetPartnerId, status])
+  @@index([periodStart, periodEnd])
+}
+
+model FleetPartnerDocument {
+  id             String        @id @default(uuid())
+  fleetPartnerId String
+  vehicleId      String?
+  documentType   String
+  fileUrl        String
+  documentNumber String?
+  issuedAt       DateTime?     @db.Date
+  expiresAt      DateTime?     @db.Date
+  verifiedAt     DateTime?     @db.Timestamptz(6)
+  verifiedById   String?
+  isApproved     Boolean       @default(false)
+  rejectionNote  String?
+  createdAt      DateTime      @default(now()) @db.Timestamptz(6)
+  fleetPartner   FleetPartner  @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+  vehicle        FleetVehicle? @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([fleetPartnerId, documentType])
+  @@index([vehicleId, expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BANK PARTNERSHIPS & OFFERS
+// These records manage marketing campaigns and attribution. A bank remains
+// responsible for its own account-opening and credit eligibility decisions.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model BankPartner {
+  id                     String                 @id @default(uuid())
+  legalName              String
+  displayName            String
+  countryCode            String                 @default("NG")
+  logoUrl                String?
+  websiteUrl             String?
+  contactEmail           String?
+  contactPhone           String?
+  status                 BankPartnerStatus      @default(PROSPECT)
+  agreementReference     String?
+  agreementStartAt       DateTime?              @db.Date
+  agreementEndAt         DateTime?              @db.Date
+  createdAt              DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime               @updatedAt @db.Timestamptz(6)
+  campaigns              BankCampaign[]
+  referrals              BankReferral[]
+  settlements            BankSettlement[]
+  // Per-bank secret for signed callbacks (referral status AND inbound credit notices). Stored encrypted (AES-256-GCM,
+  // key = BANK_SECRETS_KEY), shown once when generated; falls back to BANK_WEBHOOK_SECRETS in the environment.
+  webhookSecretEnc       String?
+  webhookSecretVersion   Int                    @default(0)
+  webhookSecretRotatedAt DateTime?              @db.Timestamptz(6)
+  receivingAccounts      BankReceivingAccount[]
+  payments               BankPayment[]
+
+  @@index([countryCode, status])
+}
+
+model BankCampaign {
+  id                    String               @id @default(uuid())
+  bankPartnerId         String
+  name                  String
+  campaignCode          String               @unique
+  description           String?
+  status                BankCampaignStatus   @default(DRAFT)
+  startsAt              DateTime?            @db.Timestamptz(6)
+  endsAt                DateTime?            @db.Timestamptz(6)
+  budgetAmount          Decimal?             @db.Decimal(14, 2)
+  spentAmount           Decimal              @default(0) @db.Decimal(14, 2)
+  currency              String               @default("NGN")
+  landingPageUrl        String?
+  attributionWindowDays Int                  @default(30)
+  createdById           String
+  approvedById          String?
+  approvedAt            DateTime?            @db.Timestamptz(6)
+  createdAt             DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime             @updatedAt @db.Timestamptz(6)
+  bankPartner           BankPartner          @relation(fields: [bankPartnerId], references: [id], onDelete: Restrict)
+  createdBy             User                 @relation("BankCampaignCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  offers                BankOffer[]
+  referrals             BankReferral[]
+  settlements           BankSettlement[]
+  dailyStats            BankOfferDailyStat[]
+  redemptions           BankRedemption[]
+
+  @@index([bankPartnerId, status])
+  @@index([startsAt, endsAt])
+}
+
+model BankOffer {
+  id                   String               @id @default(uuid())
+  campaignId           String
+  title                String
+  shortDescription     String?
+  termsAndConditions   String
+  offerType            BankOfferType
+  eligibilityType      BankEligibilityType  @default(BANK_APPROVAL_REQUIRED)
+  discountPercent      Decimal?             @db.Decimal(7, 4)
+  discountAmount       Decimal?             @db.Decimal(14, 2)
+  maxBenefitAmount     Decimal?             @db.Decimal(14, 2)
+  minTripAmount        Decimal?             @db.Decimal(14, 2)
+  redemptionLimit      Int?
+  perCustomerLimit     Int?
+  requiresBankApproval Boolean              @default(true)
+  accountOpeningUrl    String?
+  isPublished          Boolean              @default(false)
+  displayPriority      Int                  @default(0)
+  createdAt            DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime             @updatedAt @db.Timestamptz(6)
+  campaign             BankCampaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  clicks               BankOfferClick[]
+  referrals            BankReferral[]
+  dailyStats           BankOfferDailyStat[]
+  redemptions          BankRedemption[]
+
+  @@index([campaignId, isPublished, displayPriority])
+}
+
+model BankOfferClick {
+  id               String        @id @default(uuid())
+  offerId          String
+  userId           String?
+  anonymousSession String?
+  attributionCode  String        @unique
+  source           String        @default("RUNSERV_APP")
+  clickedAt        DateTime      @default(now()) @db.Timestamptz(6)
+  offer            BankOffer     @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  user             User?         @relation("BankOfferClickUser", fields: [userId], references: [id], onDelete: SetNull)
+  referral         BankReferral?
+
+  @@index([offerId, clickedAt])
+  @@index([userId, clickedAt])
+}
+
+model BankReferral {
+  id              String             @id @default(uuid())
+  bankPartnerId   String
+  campaignId      String
+  offerId         String?
+  userId          String?
+  clickId         String?            @unique
+  referralCode    String             @unique
+  status          BankReferralStatus @default(CLICKED)
+  bankExternalRef String?            @unique
+  applicationAt   DateTime?          @db.Timestamptz(6)
+  verifiedAt      DateTime?          @db.Timestamptz(6)
+  conversionValue Decimal?           @db.Decimal(14, 2)
+  currency        String             @default("NGN")
+  createdAt       DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime           @updatedAt @db.Timestamptz(6)
+  bankPartner     BankPartner        @relation(fields: [bankPartnerId], references: [id], onDelete: Restrict)
+  campaign        BankCampaign       @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  offer           BankOffer?         @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  user            User?              @relation("BankReferralUser", fields: [userId], references: [id], onDelete: SetNull)
+  click           BankOfferClick?    @relation(fields: [clickId], references: [id], onDelete: SetNull)
+
+  @@index([bankPartnerId, status, createdAt])
+  @@index([campaignId, status])
+  @@index([userId, createdAt])
+}
+
+model BankSettlement {
+  id                String               @id @default(uuid())
+  bankPartnerId     String
+  campaignId        String?
+  periodStart       DateTime             @db.Timestamptz(6)
+  periodEnd         DateTime             @db.Timestamptz(6)
+  agreedAmount      Decimal              @db.Decimal(14, 2)
+  adjustmentsAmount Decimal              @default(0) @db.Decimal(14, 2)
+  netAmount         Decimal              @db.Decimal(14, 2)
+  currency          String               @default("NGN")
+  status            BankSettlementStatus @default(PENDING)
+  invoiceReference  String?              @unique
+  // What the bank must put in the transfer narration so the credit matches this settlement automatically (RSV-XXXXXXXX).
+  paymentReference  String?              @unique
+  receivedAmount    Decimal              @default(0) @db.Decimal(14, 2)
+  paidAt            DateTime?            @db.Timestamptz(6)
+  createdAt         DateTime             @default(now()) @db.Timestamptz(6)
+  bankPartner       BankPartner          @relation(fields: [bankPartnerId], references: [id], onDelete: Restrict)
+  campaign          BankCampaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  payments          BankPayment[]
+
+  @@index([bankPartnerId, status])
+  @@index([periodStart, periodEnd])
+}
+
+// Impressions and offer views are counted per offer per day (no identifiable data is stored), and are
+// kept separate from clicks, applications, redemptions and verified conversions (blueprint §6.3).
+model BankOfferDailyStat {
+  id          String       @id @default(uuid())
+  offerId     String
+  campaignId  String
+  day         DateTime     @db.Date
+  impressions Int          @default(0)
+  views       Int          @default(0)
+  offer       BankOffer    @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  campaign    BankCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([offerId, day])
+  @@index([campaignId, day])
+}
+
+// A sponsored benefit applied to a trip. Funding sources are stored separately (blueprint §10.3):
+// the bank-funded benefit amount is what is later reconciled in BankSettlement.
+model BankRedemption {
+  id             String               @id @default(uuid())
+  offerId        String
+  campaignId     String
+  userId         String
+  idempotencyKey String               @unique
+  rideId         String?
+  deliveryId     String?
+  tripAmount     Decimal              @db.Decimal(14, 2)
+  benefitAmount  Decimal              @db.Decimal(14, 2)
+  currency       String               @default("NGN")
+  status         BankRedemptionStatus @default(RESERVED)
+  createdAt      DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime             @updatedAt @db.Timestamptz(6)
+  offer          BankOffer            @relation(fields: [offerId], references: [id], onDelete: Restrict)
+  campaign       BankCampaign         @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  user           User                 @relation("BankRedemptionUser", fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([offerId, userId, status])
+  @@index([campaignId, status])
+}
+
+// Runserv's OWN account at a partner bank. Each bank pays Runserv into Runserv's account AT THAT SAME BANK, through the
+// bank's own platform (a same-bank credit), so bank A never settles bank B's invoice and no inter-bank transfer is involved.
+model BankReceivingAccount {
+  id            String        @id @default(uuid())
+  bankPartnerId String
+  accountName   String
+  accountNumber String
+  bankName      String
+  currency      String        @default("NGN")
+  label         String?
+  isActive      Boolean       @default(true)
+  isPrimary     Boolean       @default(false)
+  createdById   String
+  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @db.Timestamptz(6)
+  bankPartner   BankPartner   @relation(fields: [bankPartnerId], references: [id], onDelete: Restrict)
+  payments      BankPayment[]
+
+  @@unique([bankPartnerId, accountNumber])
+  @@index([bankPartnerId, isActive])
+}
+
+// A credit the bank reports (or staff record from a statement). Unique per bank transaction id, so a repeated notice
+// can never be counted twice. Anything that cannot be matched with certainty waits in the exception queue.
+model BankPayment {
+  id                 String                @id @default(uuid())
+  bankPartnerId      String
+  receivingAccountId String?
+  settlementId       String?
+  source             BankPaymentSource     @default(WEBHOOK)
+  bankTransactionRef String
+  paymentReference   String?
+  amount             Decimal               @db.Decimal(14, 2)
+  currency           String                @default("NGN")
+  payerName          String?
+  creditedAccount    String?
+  paidAt             DateTime              @db.Timestamptz(6)
+  receivedAt         DateTime              @default(now()) @db.Timestamptz(6)
+  status             BankPaymentStatus
+  exceptionReason    String?
+  resolvedById       String?
+  resolvedAt         DateTime?             @db.Timestamptz(6)
+  resolutionNote     String?
+  // Company bank transfers (a company paying Runserv by transfer): the wallet or invoice this credit belongs to.
+  companyId          String?
+  invoiceId          String?
+  // Two-person rule for anything staff type or match by hand.
+  enteredById        String?
+  reviewFrom         BankPaymentStatus?
+  proposal           Json?
+  reviewedById       String?
+  reviewedAt         DateTime?             @db.Timestamptz(6)
+  reviewNote         String?
+  alertedAt          DateTime?             @db.Timestamptz(6)
+  bankPartner        BankPartner           @relation(fields: [bankPartnerId], references: [id], onDelete: Restrict)
+  receivingAccount   BankReceivingAccount? @relation(fields: [receivingAccountId], references: [id], onDelete: SetNull)
+  settlement         BankSettlement?       @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+
+  @@unique([bankPartnerId, bankTransactionRef])
+  @@index([status, receivedAt])
+  @@index([settlementId])
+  @@index([companyId])
+  @@index([invoiceId])
+  @@index([bankPartnerId, receivedAt])
+}
+
+enum BankPaymentStatus {
+  MATCHED
+  UNMATCHED
+  HELD
+  REVERSED
+  // A staff-entered or staff-matched credit waits here until a DIFFERENT admin approves it. Nothing is applied yet.
+  PENDING_REVIEW
+  REJECTED
+}
+
+enum BankPaymentSource {
+  WEBHOOK
+  MANUAL
+  STATEMENT
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLEET & BANK PARTNERSHIP ENUMS (additive)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum FleetPartnerStatus {
+  PENDING
+  UNDER_REVIEW
+  ACTIVE
+  SUSPENDED
+  REJECTED
+  DEACTIVATED
+}
+
+enum FleetPartnerRole {
+  OWNER
+  ADMIN
+  FLEET_MANAGER
+  OPERATIONS
+  FINANCE
+  VIEWER
+}
+
+enum FleetVehicleStatus {
+  PENDING
+  ACTIVE
+  IN_SERVICE
+  MAINTENANCE
+  SUSPENDED
+  RETIRED
+}
+
+enum FleetAssignmentStatus {
+  ACTIVE
+  ENDED
+  REVOKED
+}
+
+enum FleetTripStatus {
+  OFFERED
+  ACCEPTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  DISPUTED
+}
+
+enum BankPartnerStatus {
+  PROSPECT
+  DUE_DILIGENCE
+  CONTRACT_PENDING
+  ACTIVE
+  PAUSED
+  TERMINATED
+}
+
+enum BankCampaignStatus {
+  DRAFT
+  PENDING_APPROVAL
+  SCHEDULED
+  ACTIVE
+  PAUSED
+  COMPLETED
+  EXPIRED
+  CANCELLED
+}
+
+enum BankOfferType {
+  DISCOUNT
+  CASHBACK
+  SPONSORED_RIDE
+  SPONSORED_DELIVERY
+  DEFERRED_PAYMENT
+  CREDIT
+  ACCOUNT_OPENING
+}
+
+enum BankEligibilityType {
+  PUBLIC
+  EXISTING_BANK_CUSTOMERS
+  NEW_BANK_CUSTOMERS
+  INVITATION_ONLY
+  BANK_APPROVAL_REQUIRED
+}
+
+enum BankReferralStatus {
+  CLICKED
+  APPLICATION_STARTED
+  SUBMITTED
+  VERIFIED
+  DECLINED
+  EXPIRED
+  DUPLICATE
+}
+
+enum BankRedemptionStatus {
+  RESERVED
+  CONFIRMED
+  RELEASED
+}
+
+enum BankSettlementStatus {
+  PENDING
+  RECONCILING
+  APPROVED
+  PAID
+  DISPUTED
+  CANCELLED
+}
+
+enum UserRole {
+  CUSTOMER
+  DRIVER
+  DELIVERY_PARTNER
+  ADMIN
+  SUPER_ADMIN
+  MODERATOR
+  SUPPORT
+}
+
+enum ServiceType {
+  RIDE
+  DELIVERY
+}
+
+enum RideStatus {
+  REQUESTED
+  ACCEPTED
+  ARRIVED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum DeliveryStatus {
+  PENDING
+  ASSIGNED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  WALLET
+  MOBILE_MONEY
+  // Billed to the rider's organisation on its monthly invoice.
+  CORPORATE
+}
+
+enum VehicleType {
+  BIKE
+  CAR
+  MOTORCYCLE
+  VAN
+  TRICYCLE
+}
+
+enum WalletTxType {
+  CREDIT
+  DEBIT
+  WITHDRAWAL
+  REFUND
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum RidePayer {
+  SELF
+  ORGANIZATION
+}
+
+// Mon–Fri are always allowed. What happens on Sat/Sun:
+//   APPROVAL_REQUIRED – staff request a specific date, the rep approves it (default)
+//   OPEN_SATURDAY     – Saturdays allowed for everyone; Sundays need approval
+//   OPEN_WEEKEND      – Saturday and Sunday allowed for everyone
+//   CLOSED            – no weekend rides at all, requests are not accepted
+enum WeekendPolicy {
+  APPROVAL_REQUIRED
+  OPEN_SATURDAY
+  OPEN_WEEKEND
+  CLOSED
+}
+
+enum WeekendRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum CorporateTripStatus {
+  REQUESTED
+  COMPLETED
+  CANCELLED
+}
+
+enum TripAuditStatus {
+  UNREVIEWED
+  VERIFIED
+  FLAGGED
+}
+
+enum EarnerPayoutStatus {
+  ACCRUED
+  PAID
+}
+
+enum InvoiceStatus {
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum OrgPayoutStatus {
+  PENDING
+  PAID
+}
+
+enum CompanyStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum InviteStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  // Removed from the organisation by HR (e.g. resigned). The person stays a normal customer.
+  DELISTED
+}
+
+enum OrgRole {
+  ORG_ADMIN
+  HR
+  // Department head / supervisor: sees their department's costs and approves its trips.
+  MANAGER
+  FINANCE
+  STAFF
+}
+
+enum BillingMode {
+  PREPAID
+  POSTPAID
+  HYBRID
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+}
+
+enum DirectoryStatus {
+  ACTIVE
+  EXITED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  USED
+  EXPIRED
+  CANCELLED
+}
+
+enum OrgWalletTxType {
+  TOPUP
+  TRIP_CHARGE
+  REFUND
+  ADJUSTMENT
+  SUBSCRIPTION
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// M7 ADDITIONS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+// Append-only financial ledger (double entry: the DEBIT and CREDIT legs of one event always balance). The database itself
+// refuses UPDATE, DELETE and TRUNCATE on this table (see prisma/sql/post_migrate.sql); corrections are new, opposite entries.
+model LedgerEntry {
+  id             String          @id @default(uuid())
+  entryGroup     String
+  account        String
+  currency       String
+  direction      LedgerDirection
+  amount         Decimal         @db.Decimal(14, 2)
+  refType        String
+  refId          String
+  memo           String?
+  actorId        String?
+  idempotencyKey String          @unique
+  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@index([account, createdAt])
+  @@index([refType, refId])
+  @@index([entryGroup])
+}
+
+// One uploaded bank statement. The file's SHA-256 is unique per bank, so the same file can never be imported twice.
+model StatementImport {
+  id             String   @id @default(uuid())
+  bankPartnerId  String
+  fileName       String
+  sha256         String
+  rowCount       Int      @default(0)
+  createdCount   Int      @default(0)
+  duplicateCount Int      @default(0)
+  errorCount     Int      @default(0)
+  errors         Json?
+  importedById   String
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([bankPartnerId, sha256])
+  @@index([createdAt])
+}
+
+enum DemoRequestStatus {
+  NEW
+  CONTACTED
+  DEMO_SCHEDULED
+  WON
+  LOST
+}
+
+// Requests from the public landing page.
+model DemoRequest {
+  id           String            @id @default(uuid())
+  name         String
+  email        String
+  phone        String?
+  organisation String?
+  interest     String
+  message      String?
+  status       DemoRequestStatus @default(NEW)
+  ipHash       String?
+  handledById  String?
+  notes        String?
+  createdAt    DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@index([email])
+}
+
+enum MoneyActionKind {
+  ORG_WALLET_CREDIT
+  ORG_WALLET_ADJUST
+  INVOICE_RECEIPT
+  BANK_CREDIT_REVERSAL
+}
+
+enum MoneyActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Staff-entered money that affects a company (a bank transfer they saw, an adjustment, a receipt on an invoice) is only a
+// REQUEST until a different admin approves it. Nothing is credited, and no invoice is marked paid, before that.
+model PendingMoneyAction {
+  id            String            @id @default(uuid())
+  kind          MoneyActionKind
+  targetId      String
+  amount        Decimal           @db.Decimal(14, 2)
+  currency      String
+  reason        String
+  payload       Json?
+  status        MoneyActionStatus @default(PENDING)
+  requestedById String
+  decidedById   String?
+  decidedAt     DateTime?         @db.Timestamptz(6)
+  decisionNote  String?
+  alertedAt     DateTime?         @db.Timestamptz(6)
+  createdAt     DateTime          @default(now()) @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+  @@index([targetId])
+}
+
+// M13: transactional outbox. Written in the SAME transaction as trip completion; processed asynchronously with retry / dead-letter.
+model OutboxEvent {
+  id            String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  type          String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  lastError     String?
+  processedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([type, aggregateType, aggregateId])
+  @@index([status, nextAttemptAt])
+}

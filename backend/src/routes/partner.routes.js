@@ -1,0 +1,127 @@
+// backend/src/routes/partner.routes.js
+const express = require('express');
+const { body } = require('express-validator');
+const partnerController = require('../controllers/partner.controller');
+const { authenticate, authorize } = require('../middleware/auth.middleware');
+
+const { isStoredDocumentRef } = require('../utils/trustedFileUrl');
+const router = express.Router();
+
+router.use(authenticate);
+
+router.post(
+  '/profile',
+  authorize('DELIVERY_PARTNER'),
+  [
+    body('vehicleType').isIn(['BIKE', 'CAR', 'MOTORCYCLE', 'VAN', 'TRICYCLE']), // ← FIX
+    body('vehiclePlate').optional().isString(),
+    body('idImageUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('idImageUrl must be a file uploaded through Runserv'),
+    body('vehicleImageUrl').optional().isURL()
+  ],
+  partnerController.createOrUpdateProfile
+);
+
+/**
+ * @route   GET /api/partners/profile
+ * @desc    Get delivery partner profile
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.get('/profile', authorize('DELIVERY_PARTNER'), partnerController.getProfile);
+
+/** GET /api/partners/dispatch-status — structured reasons the courier cannot take deliveries. */
+router.get('/dispatch-status', authorize('DELIVERY_PARTNER'), partnerController.getDispatchStatus);
+
+/** GET / PUT /api/partners/location-consent — agree to (or stop) live-location sharing. Required before going online. */
+const locationConsent = require('../controllers/locationConsent.controller');
+router.get('/location-consent', authorize('DELIVERY_PARTNER'), locationConsent.partner.get);
+router.put('/location-consent', authorize('DELIVERY_PARTNER'), locationConsent.partner.put);
+
+/**
+ * @route   PUT /api/partners/status
+ * @desc    Update online/offline status and location
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.put(
+  '/status',
+  authorize('DELIVERY_PARTNER'),
+  [
+    body('isOnline').isBoolean(),
+    body('currentLat').optional().isFloat({ min: -90, max: 90 }),
+    body('currentLng').optional().isFloat({ min: -180, max: 180 })
+  ],
+  partnerController.updateStatus
+);
+
+/**
+ * @route   GET /api/partners/earnings
+ * @desc    Get partner earnings (with period filter)
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.get('/earnings', authorize('DELIVERY_PARTNER'), partnerController.getEarnings);
+
+/**
+ * @route   GET /api/partners/stats
+ * @desc    Get partner statistics
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.get('/stats', authorize('DELIVERY_PARTNER'), partnerController.getStats);
+
+/**
+ * @route   GET /api/partners/nearby-requests
+ * @desc    Get nearby pending deliveries
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.get('/nearby-requests', authorize('DELIVERY_PARTNER'), partnerController.getNearbyRequests);
+
+/**
+ * @route   POST /api/partners/documents
+ * @desc    Upload partner documents
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.post(
+  '/documents',
+  authorize('DELIVERY_PARTNER'),
+  [
+    body('idImageUrl').optional().custom((v) => isStoredDocumentRef(v)).withMessage('idImageUrl must be a file uploaded through Runserv'),
+    body('vehicleImageUrl').optional().isURL()
+  ],
+  partnerController.uploadDocuments
+);
+
+/**
+ * @route   POST /api/partners/payout/request
+ * @desc    Request wallet payout to bank (withdrawable balance only)
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.post(
+  '/payout/request',
+  authorize('DELIVERY_PARTNER'),
+  [
+    body('amount').isFloat({ min: 1 }),
+    // Destination fields are validated per-rail in the controller, which
+    // knows the requester's country: bank markets need a 10-digit NUBAN,
+    // Orange markets need an Orange Money MSISDN. Enforcing "10 digits"
+    // here would reject every Orange payout before it reached that logic.
+    body('accountNumber').optional().isString(),
+    body('bankCode').optional().isString(),
+    body('mobileNumber').optional().isString(),
+    body('accountName').optional().isString()
+  ],
+  partnerController.requestPayout
+);
+
+/**
+ * @route   GET /api/partners/payout/history
+ * @desc    Get payout history
+ * @access  Private (DELIVERY_PARTNER)
+ */
+router.get('/payout/history', authorize('DELIVERY_PARTNER'), partnerController.getPayoutHistory);
+
+router.put(
+  '/floor-price',
+  authorize('DELIVERY_PARTNER'),
+  [body('floorMultiplier').isFloat({ min: 1.0, max: 2.0 })],
+  partnerController.setFloorMultiplier
+);
+
+module.exports = router;

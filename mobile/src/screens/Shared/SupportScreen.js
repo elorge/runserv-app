@@ -1,0 +1,295 @@
+// mobile/src/screens/Shared/SupportScreen.js
+import React, { useRef, useEffect, useState } from 'react';
+import {
+  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  StatusBar, Dimensions, Animated, Linking, Alert, Platform,
+} from 'react-native';
+import { Ionicons }          from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme }          from '../../context/ThemeContext';
+import PoweredBy from '../../components/PoweredBy';
+import { useAuth }           from '../../context/AuthContext';
+import { useTranslation }    from 'react-i18next';
+import i18n                  from '../../i18n';
+import { settingsAPI }       from '../../services/api';
+
+const { width, height } = Dimensions.get('window');
+
+// No phone/WhatsApp default on purpose: the server returns the numbers for the user's own
+// country, and a country with none set simply hides those rows (never a Nigerian number).
+const CONTACT_DEFAULTS = {
+  email:    'support@runserv.org',
+  phone:    '',
+  whatsapp: '',
+};
+
+// ── Section ───────────────────────────────────────────────────────────────────
+const Section = ({ title, children, theme }) => (
+  <View style={[sec.wrap, { backgroundColor: theme.backgroundAlt, borderColor: theme.border }]}>
+    {title && <Text style={[sec.title, { color: theme.hint }]}>{title}</Text>}
+    {children}
+  </View>
+);
+const sec = StyleSheet.create({
+  wrap:  { borderRadius: 16, borderWidth: 1, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 4, marginBottom: 14 },
+  title: { fontSize: 10, fontWeight: '700', letterSpacing: 3, marginBottom: 6 },
+});
+
+// ── MenuItem ──────────────────────────────────────────────────────────────────
+const MenuItem = ({ icon, label, onPress, danger, value, theme, last, badge }) => {
+  const color = danger ? '#E05555' : theme.foreground;
+  return (
+    <TouchableOpacity
+      style={[mi.item, !last && { borderBottomWidth: 1, borderBottomColor: theme.border }]}
+      onPress={onPress}
+      activeOpacity={0.65}
+    >
+      <View style={[mi.iconWrap, { backgroundColor: (danger ? '#E05555' : theme.accent) + '14' }]}>
+        <Ionicons name={icon} size={17} color={danger ? '#E05555' : theme.accent} />
+      </View>
+      <Text style={[mi.label, { color }]}>{label}</Text>
+      <View style={mi.right}>
+        {value && <Text style={[mi.value, { color: theme.hint }]}>{value}</Text>}
+        {badge && (
+          <View style={[mi.badge, { backgroundColor: theme.accent }]}>
+            <Text style={[mi.badgeTxt, { color: theme.accentFg ?? '#111' }]}>{badge}</Text>
+          </View>
+        )}
+        <Ionicons name="chevron-forward" size={15} color={theme.hint} />
+      </View>
+    </TouchableOpacity>
+  );
+};
+const mi = StyleSheet.create({
+  item:    { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 },
+  iconWrap:{ width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  label:   { flex: 1, fontSize: 14, fontWeight: '500' },
+  right:   { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  value:   { fontSize: 13, fontWeight: '600' },
+  badge:   { borderRadius: 10, paddingHorizontal: 7, paddingVertical: 2 },
+  badgeTxt:{ fontSize: 10, fontWeight: '800' },
+});
+
+// ── URL helper ────────────────────────────────────────────────────────────────
+const openURL = async (url) => {
+  try {
+    const supported = await Linking.canOpenURL(url);
+    if (supported) await Linking.openURL(url);
+    else Alert.alert(i18n.t('support.cannotOpenTitle'), i18n.t('support.cannotOpenMsg', { url }));
+  } catch { Alert.alert(i18n.t('common.error'), i18n.t('support.openLinkError')); }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN SCREEN
+// ─────────────────────────────────────────────────────────────────────────────
+export default function SupportScreen({ navigation }) {
+  const { theme, mode } = useTheme();
+  const { user }        = useAuth();
+  const { t }            = useTranslation();
+  const insets          = useSafeAreaInsets();
+  const fadeA           = useRef(new Animated.Value(0)).current;
+
+  const [contact, setContact] = useState(CONTACT_DEFAULTS);
+  // KEY: measure real header height so SCROLL_H is always exact
+  const [headerH, setHeaderH] = useState(56);
+
+  useEffect(() => {
+    settingsAPI.getContactSettings()
+      .then(res => {
+        const s        = res?.data ?? {};
+        const phone    = s.support_phone    || '';
+        const whatsapp = s.support_whatsapp || phone;
+        setContact({
+          email:    s.support_email || CONTACT_DEFAULTS.email,
+          phone,
+          whatsapp: String(whatsapp).replace(/^\+/, ''),
+        });
+      })
+      .catch(() => {});
+
+    Animated.timing(fadeA, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+  }, []);
+
+  const openLegal = (contentKey, title) =>
+    navigation.navigate('Legal', { contentKey, title });
+
+  // KEY: ProfileScreen-style bounded scroll area formula
+  // headerH already includes insets.top (via paddingTop in header style)
+  // insets.bottom reserved for paddingBottom inside the scroll
+  const EXTRA_BOTTOM = Platform.OS === 'android' ? 16 : 0;
+  const SCROLL_H     = height - headerH - insets.bottom - EXTRA_BOTTOM;
+
+  return (
+    // Root View — no KAV needed (no text inputs on this screen)
+    <View style={[s.root, { backgroundColor: theme.background }]}>
+      <StatusBar
+        barStyle={mode === 'dark' ? 'light-content' : 'dark-content'}
+        backgroundColor={theme.background}
+      />
+      <View style={[s.ambientGlow, { backgroundColor: theme.accent }]} />
+
+      {/* ── Sticky header — replaces the absolute back button ────────────────
+           Measured via onLayout so SCROLL_H below is always pixel-perfect.
+           paddingTop accounts for the safe-area notch/status-bar height.     */}
+      <View
+        style={[s.header, {
+          paddingTop:        insets.top + 10,
+          backgroundColor:   theme.background,
+          borderBottomColor: theme.border,
+        }]}
+        onLayout={e => setHeaderH(e.nativeEvent.layout.height)}
+      >
+        <TouchableOpacity
+          style={[s.backBtn, { backgroundColor: theme.backgroundAlt, borderColor: theme.border }]}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.85}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <Ionicons name="arrow-back" size={20} color={theme.foreground} />
+        </TouchableOpacity>
+        <Text style={[s.headerTitle, { color: theme.foreground }]}>{t('support.headerTitle')}</Text>
+        {/* Spacer mirrors backBtn width to keep title perfectly centred */}
+        <View style={s.headerSpacer} />
+      </View>
+
+      {/* KEY: bounded pixel-height container — gives ScrollView a concrete
+           parent boundary so it can calculate its own scroll area correctly
+           on both iOS and Android. Same pattern as ProfileScreen.            */}
+      <View style={{ height: SCROLL_H }}>
+        <ScrollView
+          contentContainerStyle={[s.scroll, { paddingBottom: insets.bottom + 32 }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <Animated.View style={{ opacity: fadeA }}>
+
+            {/* Hero */}
+            <View style={s.hero}>
+              <View style={[s.heroIcon, { backgroundColor: theme.accent + '15', borderColor: theme.accent + '30' }]}>
+                <Ionicons name="headset-outline" size={32} color={theme.accent} />
+              </View>
+              <Text style={[s.heroTitle, { color: theme.foreground }]}>{t('support.heroTitle')}</Text>
+              <Text style={[s.heroSub, { color: theme.hint }]}>{t('support.heroSub')}</Text>
+            </View>
+
+            {/* Support Tickets */}
+            <Section title={t('support.sectionTickets')} theme={theme}>
+              <MenuItem
+                icon="chatbubble-ellipses-outline"
+                label={t('support.submitTicket')}
+                theme={theme}
+                onPress={() => navigation.navigate('SubmitTicket')}
+              />
+              <MenuItem
+                icon="list-outline"
+                label={t('support.myTickets')}
+                theme={theme}
+                last
+                onPress={() => navigation.navigate('MyTickets')}
+              />
+            </Section>
+
+            {/* Contact — driven by admin settings */}
+            <Section title={t('support.sectionContact')} theme={theme}>
+              <MenuItem
+                icon="mail-outline"
+                label={t('support.emailSupport')}
+                value={contact.email}
+                theme={theme}
+                onPress={() => openURL(`mailto:${contact.email}`)}
+              />
+              {!!contact.phone && (
+                <MenuItem
+                  icon="call-outline"
+                  label={t('support.callUs')}
+                  value={contact.phone}
+                  theme={theme}
+                  last={!contact.whatsapp}
+                  onPress={() => openURL(`tel:${contact.phone}`)}
+                />
+              )}
+              {!!contact.whatsapp && (
+                <MenuItem
+                  icon="logo-whatsapp"
+                  label={t('support.whatsapp')}
+                  value={`+${contact.whatsapp}`}
+                  theme={theme}
+                  last
+                  onPress={() => openURL(`https://wa.me/${contact.whatsapp}`)}
+                />
+              )}
+            </Section>
+
+            {/* Self-service */}
+            <Section title={t('support.sectionSelfService')} theme={theme}>
+              <MenuItem
+                icon="help-buoy-outline"
+                label={t('support.faqs')}
+                theme={theme}
+                onPress={() => openLegal('help_content', t('support.helpCenterTitle'))}
+              />
+              {/*<MenuItem
+                icon="warning-outline"
+                label="Report an Issue"
+                theme={theme}
+                last
+                onPress={() => navigation.navigate('SubmitTicket')}
+              /> */}
+            </Section>
+
+            {/* Legal */}
+            <Section title={t('support.sectionLegal')} theme={theme}>
+              <MenuItem
+                icon="document-text-outline"
+                label={t('support.termsOfService')}
+                theme={theme}
+                onPress={() => openLegal('terms_content', t('support.termsOfService'))}
+              />
+              <MenuItem
+                icon="shield-checkmark-outline"
+                label={t('support.privacyPolicy')}
+                theme={theme}
+                last
+                onPress={() => openLegal('privacy_content', t('support.privacyPolicy'))}
+              />
+            </Section>
+
+            <Text style={[s.version,   { color: theme.hint }]}>{t('support.versionLabel', { version: '1.0.0' })}</Text>
+            <Text style={[s.copyright, { color: theme.hint }]}>
+              {t('support.copyright', { year: new Date().getFullYear() })}
+            </Text>
+            <PoweredBy />
+
+          </Animated.View>
+        </ScrollView>
+      </View>
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  root: { flex: 1 },
+  ambientGlow: {
+    position: 'absolute', width: width * 1.2, height: width * 1.2,
+    borderRadius: width * 0.6, top: -width * 0.75,
+    alignSelf: 'center', opacity: 0.05,
+  },
+
+  // ── Sticky header (replaces absolute back button) ─────────────────────────
+  header: {
+    flexDirection: 'row', alignItems: 'flex-end',
+    paddingHorizontal: 16, paddingBottom: 12,
+    borderBottomWidth: 1,
+  },
+  backBtn:      { width: 38, height: 38, borderRadius: 13, borderWidth: 1, justifyContent: 'center', alignItems: 'center' },
+  headerTitle:  { flex: 1, textAlign: 'center', fontSize: 16, fontWeight: '800', letterSpacing: -0.2 },
+  headerSpacer: { width: 38 },
+
+  // ── Scroll content ────────────────────────────────────────────────────────
+  scroll:    { paddingHorizontal: 24, paddingTop: 24 },
+  hero:      { alignItems: 'center', paddingBottom: 28 },
+  heroIcon:  { width: 72, height: 72, borderRadius: 36, borderWidth: 1.5, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
+  heroTitle: { fontSize: 22, fontWeight: '800', marginBottom: 8, letterSpacing: -0.3 },
+  heroSub:   { fontSize: 13, textAlign: 'center', lineHeight: 20 },
+  version:   { textAlign: 'center', fontSize: 11, fontWeight: '500', marginBottom: 4 },
+  copyright: { textAlign: 'center', fontSize: 11, marginBottom: 12 },
+});

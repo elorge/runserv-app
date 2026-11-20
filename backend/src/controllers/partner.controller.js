@@ -1,0 +1,682 @@
+// backend/src/controllers/partner.controller.js
+'use strict';
+
+const prisma = require('../lib/prisma');
+const { debitWallet } = require('../services/walletOps');
+const fleetService = require('../services/fleet.service');
+const { validationResult } = require('express-validator');
+const { AppError } = require('../middleware/errorHandler');
+const notificationService = require('../services/notification.service');
+const paymentService = require('../services/payment.service');
+const { logActivity } = require('../utils/auditLog'); // ← ADDED
+const { formatMoney } = require('../utils/currency');
+const { getCountryForUser } = require('../services/country.service');
+const countrySettingsService = require('../services/countrySettings.service');
+const orangeService = require('../services/orange.service');
+const tracking = require('../services/tracking.service');
+
+console.log('[PARTNER-CTRL] Prisma partner controller loaded');
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  All uploadable document fields for delivery partners
+// ─────────────────────────────────────────────────────────────────────────────
+const PARTNER_DOC_FIELDS = [
+  // ── Personal KYC ──────────────────────────────────────────
+  { field: 'applicantPhotoUrl',        label: 'Applicant Photo'              },
+  { field: 'govtIdUrl',                label: 'Government ID'                },
+  { field: 'proofOfAddressUrl',        label: 'Proof of Address'             },
+
+  // ── Vehicle / identity docs (pre-existing) ─────────────────
+  { field: 'idImageUrl',               label: 'ID Image'                     },
+  { field: 'vehicleImageUrl',          label: 'Vehicle Image'                },
+
+  // ── Vehicle condition docs ─────────────────────────────────
+  { field: 'insuranceUrl',             label: 'Insurance Certificate'        },
+  { field: 'roadWorthinessUrl',        label: 'Road Worthiness Cert'         },
+  { field: 'vehiclePhotoExteriorUrl',  label: 'Vehicle Photo (Exterior)'     },
+  { field: 'vehiclePhotoInteriorUrl',  label: 'Vehicle Photo (Interior)'     },
+
+  // ── Bike / Dispatch specific ───────────────────────────────
+  { field: 'dispatchPermitUrl',        label: 'Dispatch / Courier Permit'    },
+  { field: 'guarantorLetterUrl',       label: 'Guarantor Letter'             },
+  { field: 'guarantorIdUrl',           label: "Guarantor's ID"               },
+
+  // ── Motorcycle specific ────────────────────────────────────
+  { field: 'riderCardUrl',             label: "Rider's Card / Union Card"    },
+  { field: 'helmetPhotoUrl',           label: 'Helmet Photo'                 },
+
+  // ── Tricycle specific ──────────────────────────────────────
+  { field: 'operatorPermitUrl',        label: 'Tricycle Operator Permit'     },
+];
+
+// ─── audit logging: post-approval critical field changes ─── ADDED ────────────
+// Same rationale as driver.controller.js — vehicleType/vehiclePlate are what
+// got this partner approved. A silent change post-approval means the
+// approved paperwork no longer matches the vehicle actually in use.
+const CRITICAL_PROFILE_FIELDS = ['vehicleType', 'vehiclePlate'];
+// ─── END ADDED ──────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/partners/profile — create or update vehicle info
+// ─────────────────────────────────────────────────────────────────────────────
+exports.createOrUpdateProfile = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const {
+    vehicleType,
+    vehiclePlate,
+    idImageUrl,
+    vehicleImageUrl,
+    numberOfSeats,
+    vehicleSubType,
+  } = req.body;
+
+  const existingProfile = await prisma.deliveryPartnerProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+
+  let profile;
+
+  if (existingProfile) {
+    // ← ADDED — detect changes to critical fields before they're overwritten
+    const incoming = { vehicleType, vehiclePlate };
+    const changedCriticalFields = CRITICAL_PROFILE_FIELDS.filter(
+      (f) => incoming[f] !== undefined && incoming[f] !== existingProfile[f]
+    );
+
+    profile = await prisma.deliveryPartnerProfile.update({
+      where: { userId: req.user.id },
+      data: {
+        ...(vehicleType     !== undefined && { vehicleType }),
+        ...(vehiclePlate    !== undefined && { vehiclePlate }),
+        ...(idImageUrl      !== undefined && { idImageUrl }),
+        ...(vehicleImageUrl !== undefined && { vehicleImageUrl }),
+        ...(numberOfSeats   !== undefined && { numberOfSeats: parseInt(numberOfSeats, 10) || null }),
+        ...(vehicleSubType  !== undefined && { vehicleSubType: vehicleSubType?.trim() || null }),
+        ...(req.body.preferredFloorPrice !== undefined && {
+          preferredFloorPrice: parseFloat(req.body.preferredFloorPrice) || null,
+        }),
+      },
+    });
+
+    // ← ADDED
+    if (existingProfile.isApproved && changedCriticalFields.length > 0) {
+      logActivity({
+        userId:     req.user.id,
+        action:     'profile_critical_field_changed_post_approval',
+        entityType: 'DeliveryPartnerProfile',
+        entityId:   profile.id,
+        details: {
+          role:          'DELIVERY_PARTNER',
+          changedFields: changedCriticalFields,
+          previous:      Object.fromEntries(changedCriticalFields.map((f) => [f, existingProfile[f]])),
+          updated:       Object.fromEntries(changedCriticalFields.map((f) => [f, incoming[f]])),
+        },
+        req,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully.',
+      data: { profile },
+    });
+  }
+
+  // New profile — vehicleType is required at registration
+  profile = await prisma.deliveryPartnerProfile.create({
+    data: {
+      userId: req.user.id,
+      vehicleType,
+      ...(vehiclePlate    && { vehiclePlate }),
+      ...(idImageUrl      && { idImageUrl }),
+      ...(vehicleImageUrl && { vehicleImageUrl }),
+      ...(numberOfSeats   && { numberOfSeats: parseInt(numberOfSeats, 10) || null }),
+      ...(vehicleSubType  && { vehicleSubType: vehicleSubType?.trim() || null }),
+      ...(req.body.preferredFloorPrice !== undefined && {
+        preferredFloorPrice: parseFloat(req.body.preferredFloorPrice) || null,
+      }),
+    },
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   'Application Submitted 🔍',
+    message: 'Your courier application is under review. Upload your documents to speed up approval.',
+    type:    'profile_submitted',
+    data:    { profileId: profile.id },
+  });
+
+  const admins = await prisma.user.findMany({
+    where:  { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId:  a.id,
+        title:   'New Courier Application 🛵',
+        message: `${req.user.firstName} ${req.user.lastName} has submitted a courier application and is awaiting approval.`,
+        type:    'partner_pending_review',
+        data:    {
+          partnerUserId:    req.user.id,
+          partnerProfileId: profile.id,
+          hasDocuments:     !!(idImageUrl || vehicleImageUrl),
+        },
+      })
+    )
+  );
+
+  res.status(201).json({
+    success: true,
+    message: 'Application submitted. Upload your documents to help speed up review.',
+    data:    { profile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/profile
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getProfile = async (req, res) => {
+  const profile = await prisma.deliveryPartnerProfile.findUnique({
+    where:   { userId: req.user.id },
+    include: {
+      user: {
+        select: {
+          firstName: true, lastName: true, email: true,
+          phone: true, profileImage: true,
+        },
+      },
+    },
+  });
+  if (!profile) throw new AppError('Delivery partner profile not found', 404);
+  res.status(200).json({ success: true, data: { profile } });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/dispatch-status — "why am I not receiving deliveries?"
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getDispatchStatus = async (req, res) => {
+  const profile = await prisma.deliveryPartnerProfile.findUnique({ where: { userId: req.user.id }, select: { isApproved: true, isRejected: true } });
+  const status = await fleetService.getDispatchStatus(req.user.id, { profile });
+  res.status(200).json({ success: true, data: status });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/partners/status — go online / offline
+// ─────────────────────────────────────────────────────────────────────────────
+exports.updateStatus = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { isOnline, currentLat, currentLng } = req.body;
+
+  const profile = await prisma.deliveryPartnerProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+
+  if (!profile)           throw new AppError('Delivery partner profile not found.', 404);
+  if (profile.isRejected) throw new AppError('Your application was not approved. Please contact support.', 403);
+  if (!profile.isApproved) throw new AppError('Your profile is still under review. You will be notified once approved.', 403);
+
+  if (isOnline) await fleetService.assertDriverDispatchable(req.user.id);
+
+  if (isOnline && !tracking.hasValidConsent(profile)) {
+    const e = new AppError('Please allow Runserv to share your live location before going online.', 403);
+    e.code = 'LOCATION_CONSENT_REQUIRED';
+    throw e;
+  }
+
+  if (!isOnline) {
+    const activeDelivery = await prisma.delivery.findFirst({
+      where: {
+        partnerId: req.user.id,
+        status:    { in: ['ASSIGNED', 'PICKED_UP', 'IN_TRANSIT'] },
+      },
+    });
+    if (activeDelivery)
+      throw new AppError('Cannot go offline with an active delivery in progress.', 400);
+  }
+
+  const updatedProfile = await prisma.deliveryPartnerProfile.update({
+    where: { userId: req.user.id },
+    data: {
+      isOnline: Boolean(isOnline),
+      ...(isOnline
+        ? (currentLat != null && currentLng != null ? { currentLat, currentLng, lastLocationAt: new Date() } : {})
+        : { currentLat: null, currentLng: null, lastLocationAt: null, locationAccuracy: null, locationHeading: null }),
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `You are now ${isOnline ? 'online' : 'offline'}.`,
+    data:    { profile: updatedProfile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/earnings
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getEarnings = async (req, res) => {
+  const { startDate, endDate, period = 'all' } = req.query;
+
+  let dateFilter = {};
+  if (period === 'today') {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    dateFilter = { gte: today };
+  } else if (period === 'week') {
+    const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+    dateFilter = { gte: weekAgo };
+  } else if (period === 'month') {
+    const monthAgo = new Date(); monthAgo.setMonth(monthAgo.getMonth() - 1);
+    dateFilter = { gte: monthAgo };
+  } else if (startDate && endDate) {
+    dateFilter = { gte: new Date(startDate), lte: new Date(endDate) };
+  }
+
+  const deliveries = await prisma.delivery.findMany({
+    where: {
+      partnerId: req.user.id,
+      status:    'DELIVERED',
+      ...(Object.keys(dateFilter).length > 0 && { deliveredAt: dateFilter }),
+    },
+    include: {
+      payment: { select: { amount: true, method: true, driverEarnings: true, platformFee: true } },
+    },
+    orderBy: { deliveredAt: 'desc' },
+  });
+
+  let totalGross       = 0;
+  let totalNetEarnings = 0;
+  let totalPlatformFee = 0;
+
+  for (const d of deliveries) {
+    totalGross       += d.actualFee ?? 0;
+    totalNetEarnings += d.payment?.driverEarnings ?? 0;
+    totalPlatformFee += d.payment?.platformFee    ?? 0;
+  }
+
+  const wallet = await prisma.wallet.findUnique({
+    where:  { userId: req.user.id },
+    select: { balance: true, currency: true },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totalEarnings:      totalGross.toFixed(2),
+      netEarnings:        totalNetEarnings.toFixed(2),
+      platformFee:        totalPlatformFee.toFixed(2),
+      walletBalance:      wallet?.balance?.toFixed(2) || '0.00',
+      totalDeliveries:    deliveries.length,
+      averagePerDelivery: deliveries.length > 0
+        ? (totalNetEarnings / deliveries.length).toFixed(2) : '0.00',
+      currency: wallet?.currency ?? 'NGN',
+      period,
+      deliveries: deliveries.map((d) => ({
+        id:                 d.id,
+        deliveredAt:        d.deliveredAt,
+        grossFee:           d.actualFee,
+        partnerEarnings:    d.payment?.driverEarnings,
+        platformFee:        d.payment?.platformFee,
+        paymentMethod:      d.payment?.method,
+        pickupAddress:      d.pickupAddress,
+        dropoffAddress:     d.dropoffAddress,
+        packageDescription: d.packageDescription,
+      })),
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/stats
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getStats = async (req, res) => {
+  const profile = await prisma.deliveryPartnerProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+  if (!profile) throw new AppError('Partner profile not found', 404);
+
+  const [completedDeliveries, cancelledDeliveries, totalDeliveries] = await Promise.all([
+    prisma.delivery.count({ where: { partnerId: req.user.id, status: 'DELIVERED'  } }),
+    prisma.delivery.count({ where: { partnerId: req.user.id, status: 'CANCELLED'  } }),
+    prisma.delivery.count({ where: { partnerId: req.user.id } }),
+  ]);
+
+  const ratings = await prisma.rating.findMany({
+    where: { delivery: { partnerId: req.user.id } },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totalDeliveries:     profile.totalDeliveries,
+      completedDeliveries,
+      cancelledDeliveries,
+      rating:              profile.rating.toFixed(2),
+      totalRatings:        ratings.length,
+      completionRate:      totalDeliveries > 0
+        ? ((completedDeliveries / totalDeliveries) * 100).toFixed(2) : '0.00',
+      cancellationRate:    totalDeliveries > 0
+        ? ((cancelledDeliveries / totalDeliveries) * 100).toFixed(2) : '0.00',
+      isOnline:    profile.isOnline,
+      isApproved:  profile.isApproved,
+      isRejected:  profile.isRejected,
+      vehicleInfo: {
+        type:         profile.vehicleType,
+        plate:        profile.vehiclePlate,
+        numberOfSeats: profile.numberOfSeats,
+        subType:      profile.vehicleSubType,
+      },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/nearby-requests
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getNearbyRequests = async (req, res) => {
+  const profile = await prisma.deliveryPartnerProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+  if (!profile)                             throw new AppError('Partner profile not found', 404);
+  if (!profile.isOnline)                    throw new AppError('You must be online to see requests', 400);
+  if (!profile.currentLat || !profile.currentLng)
+    throw new AppError('Current location not set', 400);
+
+  const pendingDeliveries = await prisma.delivery.findMany({
+    where:   { status: 'PENDING' },
+    include: {
+      customer: { select: { firstName: true, lastName: true, profileImage: true } },
+    },
+    take:    10,
+    orderBy: { requestedAt: 'desc' },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      requests:        pendingDeliveries,
+      partnerLocation: { lat: profile.currentLat, lng: profile.currentLng },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/partners/documents — upload / refresh document URLs
+// ─────────────────────────────────────────────────────────────────────────────
+exports.uploadDocuments = async (req, res) => {
+  const profile = await prisma.deliveryPartnerProfile.findUnique({
+    where: { userId: req.user.id },
+  });
+  if (!profile) throw new AppError('Partner profile not found.', 404);
+
+  // Build update payload from any recognised document field
+  const updateData = { documentsUploadedAt: new Date() };
+
+  for (const { field } of PARTNER_DOC_FIELDS) {
+    const val = req.body[field];
+    if (val !== undefined && val !== null && String(val).trim() !== '') {
+      updateData[field] = String(val).trim();
+    }
+  }
+
+  const uploadedCount = Object.keys(updateData).filter((k) => k !== 'documentsUploadedAt').length;
+  if (uploadedCount === 0)
+    throw new AppError('At least one document URL is required.', 400);
+
+  const updatedProfile = await prisma.deliveryPartnerProfile.update({
+    where: { userId: req.user.id },
+    data:  updateData,
+  });
+
+  const uploadedLabels = PARTNER_DOC_FIELDS
+    .filter(({ field }) => updateData[field])
+    .map(({ label }) => label)
+    .join(', ');
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   'Documents Uploaded ✅',
+    message: `Received: ${uploadedLabels}. Our team will review them shortly.`,
+    type:    'documents_uploaded',
+    data:    { profileId: profile.id },
+  });
+
+  const admins = await prisma.user.findMany({
+    where:  { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId:  a.id,
+        title:   'Courier Documents Uploaded 📄',
+        message: `${req.user.firstName} ${req.user.lastName} uploaded: ${uploadedLabels}.`,
+        type:    'partner_documents_uploaded',
+        data:    {
+          partnerUserId:    req.user.id,
+          partnerProfileId: profile.id,
+          documents:        Object.keys(updateData).filter((k) => k !== 'documentsUploadedAt'),
+        },
+      })
+    )
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Documents uploaded. An admin will review your application.',
+    data:    { profile: updatedProfile },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/partners/payout/request
+// ─────────────────────────────────────────────────────────────────────────────
+exports.requestPayout = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty())
+    return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { amount, accountNumber, bankCode, accountName, mobileNumber } = req.body;
+
+  const requester = await prisma.user.findUnique({ where: { id: req.user.id }, select: { countryCode: true } });
+  const country = await getCountryForUser(requester);
+
+  // Min / max / fee / on-off are per-country settings (Admin → Countries).
+  // Wallet is debited plan.gross; the provider is sent plan.net.
+  const plan = await countrySettingsService.planWithdrawal({
+    countryCode: country.code, role: 'DELIVERY_PARTNER', amount, currency: country.currencyCode,
+  });
+
+  // Same rail resolution as driver.controller.js — kept in step deliberately
+  // so a driver and a courier in the same market never see different rules.
+  const payoutMethods = country.payoutMethods;
+  if (!payoutMethods.some(m => m !== 'UNSUPPORTED')) {
+    throw new AppError(
+      `Payouts for ${country.name} aren't supported yet. Contact support.`,
+      400
+    );
+  }
+
+  const isOrangePayout = payoutMethods.includes('ORANGE_MONEY');
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!wallet)               throw new AppError('Wallet not found', 404);
+  if (wallet.balance < amount) throw new AppError('Insufficient wallet balance', 400);
+  const withdrawable = await require('../utils/walletHelpers').getWithdrawableBalance(wallet);
+  if (withdrawable < amount) {
+    throw new AppError(`You can withdraw up to ${formatMoney(withdrawable, wallet.currency)}. The rest is an onboarding bonus usable only for accepting jobs.`, 400);
+  }
+
+  let destination, resolvedBankCode, resolvedAccountName, resolvedPayoutMethod, payoutDetails;
+
+  if (isOrangePayout) {
+    const raw = mobileNumber || accountNumber;
+    if (!raw) throw new AppError('Your Orange Money number is required', 400);
+    if (!orangeService.isValidMsisdn(raw, country.code)) {
+      throw new AppError('That does not look like a valid Orange Money number for your country.', 400);
+    }
+    destination          = orangeService.normalizeMsisdn(raw, country.code);
+    resolvedBankCode     = 'ORANGE_MONEY';
+    resolvedAccountName  = accountName || `${req.user.firstName} ${req.user.lastName}`.trim();
+    resolvedPayoutMethod = 'ORANGE_MONEY';
+    payoutDetails        = { rail: 'ORANGE_MONEY', msisdn: destination, countryCode: country.code, autoSettle: orangeService.isB2CEnabled() };
+  } else {
+    if (!accountNumber || !bankCode) throw new AppError('Account number and bank code are required', 400);
+
+    const accountVerify = await paymentService
+      .verifyBankAccountUnified(accountNumber, bankCode, country.code, country)
+      .catch(() => null);
+    if (!accountVerify)
+      throw new AppError('Unable to verify bank account. Please check details.', 400);
+
+    destination          = accountNumber;
+    resolvedBankCode     = bankCode;
+    resolvedAccountName  = accountName || accountVerify.account_name;
+    resolvedPayoutMethod = payoutMethods.find(m => m !== 'UNSUPPORTED' && m !== 'MANUAL') || 'NG_BANK_TRANSFER';
+    payoutDetails        = { rail: resolvedPayoutMethod, accountNumber, bankCode, accountName: resolvedAccountName, countryCode: country.code };
+  }
+
+  const reference = `WD-${Date.now()}-${req.user.id.slice(0, 6)}`;
+
+  // ← CHANGED — capture the transaction results (was previously discarded)
+  // so we can attach the created Payout's id to the audit log entry below.
+  const [, , payoutRecord] = await prisma.$transaction(async (tx) => {
+    await debitWallet(tx, { userId: req.user.id }, amount);
+    const _r = [null];
+    _r.push(await tx.walletTransaction.create({
+      data: {
+        walletId:    wallet.id,
+        type:        'WITHDRAWAL',
+        amount,
+        description: `Withdrawal request to ${resolvedAccountName} — ${destination} (${resolvedBankCode})`,
+        status:      'PENDING',
+        reference,
+        provider:    isOrangePayout ? 'orange' : paymentService.getActivePayoutProvider(),
+      },
+    }));
+    _r.push(await tx.payout.create({
+      data: {
+        userId:        req.user.id,
+        amount:        plan.net,
+        currency:      wallet.currency,
+        accountNumber: destination,
+        bankCode:      resolvedBankCode,
+        accountName:   resolvedAccountName,
+        status:        'PENDING',
+        reference,
+        payoutMethod:  resolvedPayoutMethod,
+        payoutDetails: { ...payoutDetails, grossAmount: plan.gross, fee: plan.fee },
+      },
+    }));
+    return _r;
+  });
+
+  // ← ADDED
+  logActivity({
+    userId:     req.user.id,
+    action:     'payout_requested',
+    entityType: 'Payout',
+    entityId:   payoutRecord.id,
+    details: {
+      role:          'DELIVERY_PARTNER',
+      amount,
+      bankCode: resolvedBankCode,
+      accountNumber: `****${String(destination).slice(-4)}`,
+      reference,
+    },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   'Withdrawal Requested 🏦',
+    message: `${formatMoney(amount, wallet.currency)} withdrawal to ${resolvedAccountName} is pending admin review.`,
+    type:    notificationService.TYPES.WALLET_WITHDRAWAL,
+    data:    { amount, accountNumber: `****${String(destination).slice(-4)}`, bankCode: resolvedBankCode, reference },
+  });
+
+  const admins = await prisma.user.findMany({
+    where:  { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+
+  await Promise.allSettled(
+    admins.map((a) =>
+      notificationService.notify({
+        userId:  a.id,
+        title:   'New Withdrawal Request 💸',
+        message: `${req.user.firstName} ${req.user.lastName} (Partner) → ${resolvedAccountName}: ${formatMoney(amount, wallet.currency)}`,
+        type:    'withdrawal_pending',
+        data:    { reference, userId: req.user.id, amount },
+      })
+    )
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal request submitted. Our team will process it within 1–2 business days.',
+    data:    { reference, amount },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/partners/payout/history
+// ─────────────────────────────────────────────────────────────────────────────
+exports.getPayoutHistory = async (req, res) => {
+  const { page = 1, limit = 10, status } = req.query;
+  const skip  = (page - 1) * limit;
+  const where = { userId: req.user.id, ...(status && { status }) };
+
+  const [payouts, total] = await Promise.all([
+    prisma.payout.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip:    parseInt(skip, 10),
+      take:    parseInt(limit, 10),
+    }),
+    prisma.payout.count({ where }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      payouts,
+      pagination: { total, page: parseInt(page, 10), pages: Math.ceil(total / limit) },
+    },
+  });
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUT /api/partners/floor-price
+// ─────────────────────────────────────────────────────────────────────────────
+exports.setFloorMultiplier = async (req, res) => {
+  const { floorMultiplier } = req.body;
+  const multiplier = parseFloat(floorMultiplier);
+
+  if (isNaN(multiplier) || multiplier < 1.0 || multiplier > 1.30)
+    throw new AppError('Floor multiplier must be between 1.0 and 1.30 (+30% max)', 400);
+
+  const profile = await prisma.deliveryPartnerProfile.update({
+    where: { userId: req.user.id },
+    data:  { floorMultiplier: multiplier },
+  });
+
+  const pctAbove = Math.round((multiplier - 1) * 100);
+  res.status(200).json({
+    success: true,
+    message: pctAbove === 0
+      ? 'Floor price removed — you will accept base fee.'
+      : `Floor price set to +${pctAbove}% above base fee.`,
+    data: { floorMultiplier: profile.floorMultiplier },
+  });
+};
+
+module.exports = exports;

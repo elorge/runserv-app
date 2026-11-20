@@ -1,0 +1,1148 @@
+// admin-web/src/pages/Wallets/PayoutManagement.tsx  [Mobile-responsive]
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  CheckCircle, XCircle, Clock, DollarSign, ArrowLeftRight,
+  Building2, RefreshCw, Filter,
+} from 'lucide-react';
+import api from '@/services/api';
+import toast from 'react-hot-toast';
+import { formatMoney, sortCurrencies } from '@/utils/money';
+import CurrencyTabs from '@/components/common/CurrencyTabs';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type PayoutStatus    = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'REJECTED' | 'ALL';
+type TransferStatus  = 'PENDING' | 'COMPLETED' | 'FAILED' | 'ALL';
+
+interface PayoutUser {
+  id: string; firstName: string; lastName: string; email: string; phone: string; role: string;
+}
+
+interface Payout {
+  id: string; userId: string; user: PayoutUser;
+  amount: number; currency?: string; accountNumber: string; bankCode: string; bankName?: string | null; accountName: string;
+  payoutMethod?: string | null; transferCode?: string | null; transferError?: string | null;
+  payoutDetails?: { fee?: number; grossAmount?: number; rail?: string; manual?: boolean; nameVerified?: boolean } | null;
+  status: string; reference: string; failureReason?: string;
+  processedAt?: string; createdAt: string;
+}
+
+interface TransferUser {
+  id: string; firstName: string; lastName: string; email: string; phone: string;
+}
+
+interface Transfer {
+  id: string;
+  reference: string;
+  senderId: string;
+  recipientId: string;
+  amount: number;
+  currency?: string;
+  note: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  sender: TransferUser;
+  recipient: TransferUser;
+}
+
+// Balances and daily credits/debits are reported per currency — never summed across them.
+interface CurrencyWalletStats {
+  currency: string; totalBalance: number; walletCount: number;
+  todayCredits: number; todayDebits: number;
+}
+interface WalletStats {
+  byCurrency: CurrencyWalletStats[];
+  totalWallets: number;
+  pendingPayouts: number; pendingTransfers: number;
+}
+
+interface Pagination { total: number; page: number; pages: number; }
+
+// ─── Sub-components ───────────────────────────────────────────────────────────
+
+const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
+  const map: Record<string, string> = {
+    PENDING:   'bg-yellow-100 text-yellow-800 border-yellow-200',
+    COMPLETED: 'bg-green-100  text-green-800  border-green-200',
+    FAILED:    'bg-red-100    text-red-800    border-red-200',
+    REJECTED:  'bg-red-100    text-red-800    border-red-200',
+  };
+  const cls = map[status] ?? 'bg-gray-100 text-gray-700 border-gray-200';
+  return (
+    <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${cls}`}>
+      {status === 'PENDING'   && <Clock       className="w-3 h-3" />}
+      {status === 'COMPLETED' && <CheckCircle className="w-3 h-3" />}
+      {(status === 'FAILED' || status === 'REJECTED') && <XCircle className="w-3 h-3" />}
+      {status}
+    </span>
+  );
+};
+
+const ConfirmModal: React.FC<{
+  open: boolean;
+  title: string;
+  body: string;
+  placeholder?: string;
+  confirmLabel: string;
+  confirmClass?: string;
+  onCancel: () => void;
+  onConfirm: (reason: string) => void;
+  loading?: boolean;
+}> = ({ open, title, body, placeholder, confirmLabel, confirmClass = 'btn-primary', onCancel, onConfirm, loading }) => {
+  const [text, setText] = useState('');
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-0 sm:p-4">
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-md p-5 sm:p-6 max-h-[90vh] overflow-y-auto">
+        <h3 className="text-lg font-bold text-gray-900 mb-2">{title}</h3>
+        <p className="text-sm text-gray-600 mb-4">{body}</p>
+        {placeholder && (
+          <textarea
+            className="w-full border border-gray-200 rounded-xl p-3 text-sm resize-none h-24 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder={placeholder}
+            value={text}
+            onChange={e => setText(e.target.value)}
+          />
+        )}
+        <div className="flex flex-col-reverse sm:flex-row gap-2 sm:gap-3 sm:justify-end">
+          <button className="btn btn-ghost w-full sm:w-auto py-2.5 sm:py-2" onClick={onCancel} disabled={loading}>Cancel</button>
+          <button
+            className={`btn ${confirmClass} w-full sm:w-auto py-2.5 sm:py-2 flex items-center justify-center`}
+            onClick={() => onConfirm(text)}
+            disabled={loading}
+          >
+            {loading ? <span className="loading loading-spinner loading-xs" /> : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// A small labeled value used inside mobile cards, keeps every card's
+// key/value rhythm identical so the eye can scan straight down the column.
+const CardField: React.FC<{ label: string; children: React.ReactNode; className?: string }> = ({ label, children, className }) => (
+  <div className={className}>
+    <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 mb-0.5">{label}</div>
+    <div className="text-sm text-gray-800">{children}</div>
+  </div>
+);
+
+const CardActions: React.FC<{
+  status: string;
+  onApprove: () => void;
+  onReject: () => void;
+  approveLabel?: string;
+  processedNote?: string;
+}> = ({ status, onApprove, onReject, approveLabel = 'Approve', processedNote = 'Processed' }) => (
+  status === 'PENDING' ? (
+    <div className="flex gap-2 mt-3">
+      <button
+        onClick={onApprove}
+        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-green-600 active:bg-green-700 text-white text-xs font-semibold rounded-xl transition-colors"
+      >
+        <CheckCircle className="w-4 h-4" /> {approveLabel}
+      </button>
+      <button
+        onClick={onReject}
+        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-500 active:bg-red-600 text-white text-xs font-semibold rounded-xl transition-colors"
+      >
+        <XCircle className="w-4 h-4" /> Reject
+      </button>
+    </div>
+  ) : (
+    <div className="mt-3 text-xs text-gray-400">{processedNote}</div>
+  )
+);
+
+// ─── Payout: desktop row + mobile card ────────────────────────────────────────
+
+// Each payout is in its OWN country's currency — never assume naira.
+const money = (n: number, currency?: string | null) => formatMoney(n, currency);
+
+const PROVIDER_LABEL: Record<string, string> = {
+  paystack: 'Paystack', flutterwave: 'Flutterwave', orange: 'Orange Money',
+};
+const PROVIDER_STYLE: Record<string, string> = {
+  paystack:    'bg-sky-50 text-sky-700',
+  flutterwave: 'bg-amber-50 text-amber-700',
+  orange:      'bg-orange-50 text-orange-700',
+};
+const isManualRail = (p: Payout) => p.payoutMethod === 'MANUAL' || p.payoutDetails?.manual === true;
+
+/** What the admin can do with a payout in its current state. */
+const PayoutActions: React.FC<{
+  payout: Payout;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  onComplete: (id: string) => void;
+}> = ({ payout, onApprove, onReject, onComplete }) => {
+  const btn = 'flex items-center gap-1 px-3 py-1.5 text-white text-xs font-semibold rounded-lg transition-colors';
+  // Once a provider accepted a transfer the money may have left: only
+  // "Mark as paid" is safe. Retry/reject are offered only when none started.
+  const canRetryOrReject = !payout.transferCode;
+
+  if (payout.status === 'PENDING') {
+    return (
+      <div className="flex flex-wrap gap-2">
+        {isManualRail(payout) ? (
+          <button onClick={() => onComplete(payout.id)} className={`${btn} bg-green-600 hover:bg-green-700`} title="Send the money yourself, then confirm here">
+            <CheckCircle className="w-3.5 h-3.5" /> Mark as paid
+          </button>
+        ) : (
+          <button onClick={() => onApprove(payout.id)} className={`${btn} bg-green-600 hover:bg-green-700`}>
+            <CheckCircle className="w-3.5 h-3.5" /> Approve
+          </button>
+        )}
+        <button onClick={() => onReject(payout.id)} className={`${btn} bg-red-500 hover:bg-red-600`}>
+          <XCircle className="w-3.5 h-3.5" /> Reject
+        </button>
+      </div>
+    );
+  }
+  if (payout.status === 'PROCESSING') {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <button onClick={() => onComplete(payout.id)} className={`${btn} bg-green-600 hover:bg-green-700`}>
+          <CheckCircle className="w-3.5 h-3.5" /> Mark as paid
+        </button>
+        {canRetryOrReject && !isManualRail(payout) && (
+          <button onClick={() => onApprove(payout.id)} className={`${btn} bg-blue-600 hover:bg-blue-700`}>Retry transfer</button>
+        )}
+        {canRetryOrReject && (
+          <button onClick={() => onReject(payout.id)} className={`${btn} bg-red-500 hover:bg-red-600`}>
+            <XCircle className="w-3.5 h-3.5" /> Reject
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <span className="text-xs text-gray-400">
+      {payout.processedAt ? new Date(payout.processedAt).toLocaleDateString() : '—'}
+    </span>
+  );
+};
+
+const PayoutNotes: React.FC<{ payout: Payout }> = ({ payout }) => (
+  <>
+    {payout.payoutDetails?.fee ? (
+      <div className="text-[11px] text-gray-500 mt-0.5">
+        Fee {money(payout.payoutDetails.fee, payout.currency)} · debited {money(payout.payoutDetails.grossAmount ?? payout.amount, payout.currency)}
+      </div>
+    ) : null}
+    {isManualRail(payout) && (
+      <div className="text-[11px] text-amber-700 mt-0.5">Manual settlement — name not verified</div>
+    )}
+    {!isManualRail(payout) && payout.payoutDetails?.nameVerified === false && (
+      <div className="text-[11px] text-amber-700 mt-0.5" title="No service can look up this account holder. Compare the name with the person before approving.">Name typed by the user — not verified</div>
+    )}
+    {payout.status === 'PROCESSING' && payout.transferError && (
+      <div className="text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1 mt-1 max-w-[260px]" title={payout.transferError}>{payout.transferError}</div>
+    )}
+  </>
+);
+
+const PayoutRow: React.FC<{
+  payout: Payout;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  onComplete: (id: string) => void;
+}> = ({ payout, onApprove, onReject, onComplete }) => (
+  <tr className="hover:bg-gray-50 transition-colors">
+    <td className="px-4 py-4">
+      <div className="font-semibold text-gray-900 text-sm">
+        {payout.user.firstName} {payout.user.lastName}
+      </div>
+      <div className="text-xs text-gray-500">{payout.user.email}</div>
+      <div className="text-xs text-gray-400 font-mono">{payout.user.phone}</div>
+    </td>
+    <td className="px-4 py-4">
+      <div className="font-bold text-gray-900">{money(payout.amount, payout.currency)}</div>
+      <div className="text-xs text-gray-500 font-mono mt-0.5">{payout.reference}</div>
+      <PayoutNotes payout={payout} />
+    </td>
+    <td className="px-4 py-4">
+      <div className="text-sm font-semibold text-gray-800">{payout.accountName}</div>
+      <div className="text-xs text-gray-500 font-mono">{payout.accountNumber}</div>
+      <div className="text-xs text-gray-400">{payout.bankName || `Code: ${payout.bankCode}`}</div>
+    </td>
+    <td className="px-4 py-4">
+      <StatusBadge status={payout.status} />
+      {payout.failureReason && (
+        <div className="text-xs text-red-600 mt-1 max-w-[140px] truncate" title={payout.failureReason}>
+          {payout.failureReason}
+        </div>
+      )}
+    </td>
+    <td className="px-4 py-4 text-xs text-gray-500">
+      {new Date(payout.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+    </td>
+    <td className="px-4 py-4">
+      <PayoutActions payout={payout} onApprove={onApprove} onReject={onReject} onComplete={onComplete} />
+    </td>
+  </tr>
+);
+
+const PayoutCard: React.FC<{
+  payout: Payout;
+  onApprove: (id: string) => void;
+  onReject: (id: string) => void;
+  onComplete: (id: string) => void;
+}> = ({ payout, onApprove, onReject, onComplete }) => (
+  <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="font-semibold text-gray-900 text-sm truncate">
+          {payout.user.firstName} {payout.user.lastName}
+        </div>
+        <div className="text-xs text-gray-500 truncate">{payout.user.email}</div>
+      </div>
+      <StatusBadge status={payout.status} />
+    </div>
+
+    <div className="mt-3 flex items-baseline justify-between">
+      <div className="font-bold text-gray-900 text-lg">{money(payout.amount, payout.currency)}</div>
+      <div className="text-[11px] text-gray-400 font-mono">{payout.reference}</div>
+    </div>
+    <PayoutNotes payout={payout} />
+
+    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-gray-50 pt-3">
+      <CardField label="Account">
+        <span className="font-mono">{payout.accountNumber}</span>
+      </CardField>
+      <CardField label="Bank">{payout.bankName || `Code: ${payout.bankCode}`}</CardField>
+      <CardField label="Account Name" className="col-span-2">{payout.accountName}</CardField>
+      <CardField label="Requested" className="col-span-2">
+        {new Date(payout.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+      </CardField>
+    </div>
+
+    {payout.failureReason && (
+      <div className="mt-2 text-xs text-red-600 bg-red-50 rounded-lg px-2.5 py-1.5">{payout.failureReason}</div>
+    )}
+
+    <div className="mt-3"><PayoutActions payout={payout} onApprove={onApprove} onReject={onReject} onComplete={onComplete} /></div>
+  </div>
+);
+
+// ─── Transfer: desktop row + mobile card ──────────────────────────────────────
+
+const TransferRow: React.FC<{
+  transfer: Transfer;
+  onApprove: (ref: string) => void;
+  onReject: (ref: string) => void;
+}> = ({ transfer, onApprove, onReject }) => (
+  <tr className="hover:bg-gray-50 transition-colors">
+    <td className="px-4 py-4">
+      <div className="font-semibold text-gray-900 text-sm">
+        {transfer.sender.firstName} {transfer.sender.lastName}
+      </div>
+      <div className="text-xs text-gray-500">{transfer.sender.email}</div>
+      <div className="text-xs text-gray-400 font-mono">{transfer.sender.phone}</div>
+    </td>
+    <td className="px-4 py-4">
+      <div className="text-sm font-bold text-gray-800">
+        → {transfer.recipient.firstName} {transfer.recipient.lastName}
+      </div>
+      <div className="text-xs text-gray-500 font-mono">{transfer.recipient.phone}</div>
+      {transfer.note && (
+        <div className="text-xs text-gray-500 mt-1 max-w-[200px] truncate" title={transfer.note}>
+          Note: {transfer.note}
+        </div>
+      )}
+    </td>
+    <td className="px-4 py-4">
+      <div className="font-bold text-gray-900">{money(transfer.amount, transfer.currency)}</div>
+      <div className="text-xs text-gray-500 font-mono mt-0.5">{transfer.reference}</div>
+    </td>
+    <td className="px-4 py-4">
+      <StatusBadge status={transfer.status} />
+    </td>
+    <td className="px-4 py-4 text-xs text-gray-500">
+      {new Date(transfer.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+    </td>
+    <td className="px-4 py-4">
+      {transfer.status === 'PENDING' ? (
+        <div className="flex gap-2">
+          <button
+            onClick={() => onApprove(transfer.reference)}
+            className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            <CheckCircle className="w-3.5 h-3.5" /> Approve
+          </button>
+          <button
+            onClick={() => onReject(transfer.reference)}
+            className="flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            <XCircle className="w-3.5 h-3.5" /> Reject
+          </button>
+        </div>
+      ) : (
+        <span className="text-xs text-gray-400">Processed</span>
+      )}
+    </td>
+  </tr>
+);
+
+const TransferCard: React.FC<{
+  transfer: Transfer;
+  onApprove: (ref: string) => void;
+  onReject: (ref: string) => void;
+}> = ({ transfer, onApprove, onReject }) => (
+  <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 text-sm">
+        <div className="font-semibold text-gray-900 truncate">
+          {transfer.sender.firstName} {transfer.sender.lastName}
+        </div>
+        <div className="flex items-center gap-1 text-gray-500 text-xs mt-0.5">
+          <ArrowLeftRight className="w-3 h-3 shrink-0" />
+          <span className="truncate">{transfer.recipient.firstName} {transfer.recipient.lastName}</span>
+        </div>
+      </div>
+      <StatusBadge status={transfer.status} />
+    </div>
+
+    <div className="mt-3 flex items-baseline justify-between">
+      <div className="font-bold text-gray-900 text-lg">{money(transfer.amount, transfer.currency)}</div>
+      <div className="text-[11px] text-gray-400 font-mono">{transfer.reference}</div>
+    </div>
+
+    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-gray-50 pt-3">
+      <CardField label="Sender phone"><span className="font-mono">{transfer.sender.phone}</span></CardField>
+      <CardField label="Recipient phone"><span className="font-mono">{transfer.recipient.phone}</span></CardField>
+      <CardField label="Initiated" className="col-span-2">
+        {new Date(transfer.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+      </CardField>
+      {transfer.note && <CardField label="Note" className="col-span-2">{transfer.note}</CardField>}
+    </div>
+
+    <CardActions
+      status={transfer.status}
+      onApprove={() => onApprove(transfer.reference)}
+      onReject={() => onReject(transfer.reference)}
+    />
+  </div>
+);
+
+// ─── Top-up: desktop row + mobile card ────────────────────────────────────────
+
+const TopUpRow: React.FC<{
+  topup: TopUp;
+  onReconcile: (id: string) => void;
+  onReject: (id: string) => void;
+}> = ({ topup, onReconcile, onReject }) => (
+  <tr className="hover:bg-gray-50 transition-colors">
+    <td className="px-4 py-4">
+      <div className="font-semibold text-gray-900 text-sm">
+        {topup.wallet.user.firstName} {topup.wallet.user.lastName}
+      </div>
+      <div className="text-xs text-gray-500">{topup.wallet.user.email}</div>
+      <div className="text-xs text-gray-400 font-mono">{topup.wallet.user.phone}</div>
+    </td>
+    <td className="px-4 py-4">
+      <div className="font-bold text-gray-900">{money(topup.amount, topup.wallet.currency)}</div>
+      <div className="text-xs text-gray-500 font-mono mt-0.5">{topup.reference}</div>
+    </td>
+    <td className="px-4 py-4">
+      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${PROVIDER_STYLE[topup.provider] ?? 'bg-gray-100 text-gray-700'}`}>
+        {PROVIDER_LABEL[topup.provider] ?? topup.provider ?? 'Unknown'}
+      </span>
+    </td>
+    <td className="px-4 py-4"><StatusBadge status={topup.status} /></td>
+    <td className="px-4 py-4 text-xs text-gray-500">
+      {new Date(topup.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+    </td>
+    <td className="px-4 py-4">
+      {topup.status === 'PENDING' ? (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onReconcile(topup.id)}
+            className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            <CheckCircle className="w-3.5 h-3.5" /> Verify & Credit
+          </button>
+          <button
+            onClick={() => onReject(topup.id)}
+            className="flex items-center gap-1 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold rounded-lg transition-colors"
+          >
+            <XCircle className="w-3.5 h-3.5" /> Reject
+          </button>
+        </div>
+      ) : (
+        <span className="text-xs text-gray-400">
+          {topup.status === 'COMPLETED' ? 'Credited' : topup.status === 'REJECTED' ? 'Rejected' : 'Not credited'}
+        </span>
+      )}
+    </td>
+  </tr>
+);
+
+const TopUpCard: React.FC<{
+  topup: TopUp;
+  onReconcile: (id: string) => void;
+  onReject: (id: string) => void;
+}> = ({ topup, onReconcile, onReject }) => (
+  <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="font-semibold text-gray-900 text-sm truncate">
+          {topup.wallet.user.firstName} {topup.wallet.user.lastName}
+        </div>
+        <div className="text-xs text-gray-500 truncate">{topup.wallet.user.email}</div>
+      </div>
+      <StatusBadge status={topup.status} />
+    </div>
+
+    <div className="mt-3 flex items-baseline justify-between">
+      <div className="font-bold text-gray-900 text-lg">{money(topup.amount, topup.wallet.currency)}</div>
+      <div className="text-[11px] text-gray-400 font-mono">{topup.reference}</div>
+    </div>
+
+    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-gray-50 pt-3">
+      <CardField label="Provider">{PROVIDER_LABEL[topup.provider] ?? topup.provider}</CardField>
+      <CardField label="Initiated">
+        {new Date(topup.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+      </CardField>
+    </div>
+
+    {topup.status === 'PENDING' ? (
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => onReconcile(topup.id)}
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-green-600 active:bg-green-700 text-white text-xs font-semibold rounded-xl transition-colors"
+        >
+          <CheckCircle className="w-4 h-4" /> Verify & Credit
+        </button>
+        <button
+          onClick={() => onReject(topup.id)}
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-50 active:bg-red-100 text-red-700 border border-red-200 text-xs font-semibold rounded-xl transition-colors"
+        >
+          <XCircle className="w-4 h-4" /> Reject
+        </button>
+      </div>
+    ) : (
+      <div className="mt-3 text-xs text-gray-400">
+        {topup.status === 'COMPLETED' ? 'Credited' : topup.status === 'REJECTED' ? 'Rejected' : 'Not credited'}
+      </div>
+    )}
+  </div>
+);
+
+// ─── MAIN PAGE ────────────────────────────────────────────────────────────────
+
+type TabId = 'payouts' | 'transfers' | 'topups';
+
+interface TopUpUser {
+  id: string; firstName: string; lastName: string; email: string; phone: string;
+}
+interface TopUp {
+  id: string;
+  amount: number;
+  status: string;
+  reference: string;
+  provider: 'paystack' | 'flutterwave' | 'orange' | 'unknown';
+  description: string;
+  createdAt: string;
+  wallet: { userId: string; currency?: string; user: TopUpUser };
+}
+
+const PayoutManagement: React.FC = () => {
+  const [tab,               setTab]              = useState<TabId>('payouts');
+  const [stats,             setStats]            = useState<WalletStats | null>(null);
+  const [payouts,           setPayouts]          = useState<Payout[]>([]);
+  const [transfers,         setTransfers]        = useState<Transfer[]>([]);
+  const [payoutPagination,  setPayoutPagination] = useState<Pagination>({ total: 0, page: 1, pages: 1 });
+  const [xferPagination,    setXferPagination]   = useState<Pagination>({ total: 0, page: 1, pages: 1 });
+  const [payoutStatus,      setPayoutStatus]     = useState<PayoutStatus>('PENDING');
+  const [xferStatus,        setXferStatus]       = useState<TransferStatus>('PENDING');
+  const [topups,            setTopups]           = useState<TopUp[]>([]);
+  const [topupPagination,   setTopupPagination]  = useState<Pagination>({ total: 0, page: 1, pages: 1 });
+  const [topupStatus,       setTopupStatus]      = useState<PayoutStatus>('PENDING');
+  const [loading,           setLoading]          = useState(false);
+  const [statsCurrency,     setStatsCurrency]    = useState<string>('');
+
+  // Confirm modal state
+  const [modal, setModal] = useState<{
+    open:    boolean;
+    type:    'approve_payout' | 'reject_payout' | 'complete_payout' | 'approve_transfer' | 'reject_transfer' | 'reconcile_topup' | 'reject_topup';
+    id:      string;
+    loading: boolean;
+  }>({ open: false, type: 'approve_payout', id: '', loading: false });
+
+  // ── Data loading ────────────────────────────────────────────────────────────
+
+  const loadStats = useCallback(async () => {
+    try {
+      const res = await api.get('/wallet/admin/stats');
+      const data: WalletStats = res.data.data;
+      setStats(data);
+      setStatsCurrency(prev => {
+        const codes = (data.byCurrency ?? []).map(c => c.currency);
+        return prev && codes.includes(prev) ? prev : (sortCurrencies(codes)[0] ?? '');
+      });
+    } catch { /* non-critical */ }
+  }, []);
+
+  const loadPayouts = useCallback(async (page = 1) => {
+    setLoading(true);
+    try {
+      const res = await api.get('/wallet/admin/payouts', { params: { status: payoutStatus, page, limit: 20 } });
+      setPayouts(res.data.data.payouts);
+      setPayoutPagination(res.data.data.pagination);
+    } catch { toast.error('Failed to load payouts'); }
+    finally { setLoading(false); }
+  }, [payoutStatus]);
+
+  const loadTransfers = useCallback(async (page = 1) => {
+    setLoading(true);
+    try {
+      const res = await api.get('/wallet/admin/transfers', { params: { status: xferStatus, page, limit: 20 } });
+      setTransfers(res.data.data.transfers);
+      setXferPagination(res.data.data.pagination);
+    } catch { toast.error('Failed to load transfers'); }
+    finally { setLoading(false); }
+  }, [xferStatus]);
+
+  const loadTopUps = useCallback(async (page = 1) => {
+    setLoading(true);
+    try {
+      const res = await api.get('/wallet/admin/topups', { params: { status: topupStatus, page, limit: 20 } });
+      setTopups(res.data.data.topups);
+      setTopupPagination(res.data.data.pagination);
+    } catch { toast.error('Failed to load top-ups'); }
+    finally { setLoading(false); }
+  }, [topupStatus]);
+
+  useEffect(() => { loadStats(); }, []);
+  useEffect(() => { if (tab === 'payouts')   loadPayouts();   }, [tab, payoutStatus]);
+  useEffect(() => { if (tab === 'transfers') loadTransfers(); }, [tab, xferStatus]);
+  useEffect(() => { if (tab === 'topups')    loadTopUps();    }, [tab, topupStatus]);
+
+  // ── Modal actions ───────────────────────────────────────────────────────────
+
+  const openModal = (type: typeof modal.type, id: string) =>
+    setModal({ open: true, type, id, loading: false });
+
+  const closeModal = () =>
+    setModal(m => ({ ...m, open: false, loading: false }));
+
+  const confirmAction = async (noteOrReason: string) => {
+    if (modal.type === 'reject_topup' && noteOrReason.trim().length < 3) {
+      toast.error('Please enter a reason for rejecting this top-up (at least 3 characters).');
+      return;
+    }
+    setModal(m => ({ ...m, loading: true }));
+    const { type, id } = modal;
+
+    try {
+      if (type === 'approve_payout') {
+        const res = await api.put(`/wallet/admin/payouts/${id}/approve`, { note: noteOrReason });
+        const { provider, transferError } = res.data?.data ?? {};
+        const providerOk = res.data?.data?.[provider] === 'ok';
+
+        if (!providerOk) {
+          toast.error(`⚠️ Payout approved but ${provider} transfer failed: ${transferError ?? 'Unknown error'}. Ops retry needed.`, {
+            duration: 8000,
+          });
+        } else {
+          toast.success(`Payout approved and ${provider} transfer initiated`);
+        }
+        loadPayouts();
+      } else if (type === 'complete_payout') {
+        await api.put(`/wallet/admin/payouts/${id}/complete`, { reference: noteOrReason || undefined });
+        toast.success('Payout marked as paid');
+        loadPayouts();
+      } else if (type === 'reject_payout') {
+        await api.put(`/wallet/admin/payouts/${id}/reject`, { reason: noteOrReason });
+        toast.success('Payout rejected and wallet refunded');
+        loadPayouts();
+      } else if (type === 'approve_transfer') {
+        await api.put(`/wallet/admin/transfers/${id}/approve`, { note: noteOrReason });
+        toast.success('Transfer approved. Recipient credited.');
+        loadTransfers();
+      } else if (type === 'reject_transfer') {
+        await api.put(`/wallet/admin/transfers/${id}/reject`, { reason: noteOrReason });
+        toast.success('Transfer rejected and sender refunded.');
+        loadTransfers();
+      } else if (type === 'reconcile_topup') {
+        const res = await api.put(`/wallet/admin/topups/${id}/reconcile`);
+        toast.success(res.data?.message ?? 'Top-up verified and credited');
+        loadTopUps();
+      } else if (type === 'reject_topup') {
+        const res = await api.put(`/wallet/admin/topups/${id}/reject`, { reason: noteOrReason });
+        toast.success(res.data?.message ?? 'Top-up rejected');
+        loadTopUps();
+      }
+      loadStats();
+      closeModal();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Action failed');
+      setModal(m => ({ ...m, loading: false }));
+    }
+  };
+
+  // ── Status filter tabs ──────────────────────────────────────────────────────
+
+  const PAYOUT_STATUSES: PayoutStatus[]   = ['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'ALL'];
+  const XFER_STATUSES:   TransferStatus[] = ['PENDING', 'COMPLETED', 'FAILED', 'ALL'];
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="space-y-5 sm:space-y-6 p-3 sm:p-6">
+
+      {/* Page header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-gray-900">Wallet Management</h1>
+          <p className="text-gray-500 text-xs sm:text-sm mt-1">
+            Review and approve withdrawal requests and peer transfers.
+          </p>
+        </div>
+        <button
+          className="flex items-center justify-center gap-2 px-4 py-2.5 sm:py-2 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 text-sm font-semibold rounded-xl transition-colors w-full sm:w-auto"
+          onClick={() => {
+            loadStats();
+            if (tab === 'payouts') loadPayouts();
+            else if (tab === 'transfers') loadTransfers();
+            else loadTopUps();
+          }}
+        >
+          <RefreshCw className="w-4 h-4" /> Refresh
+        </button>
+      </div>
+
+      {/* Balances/credits/debits are per currency — pick one; counts below are global */}
+      {stats && (
+        <CurrencyTabs
+          currencies={sortCurrencies((stats.byCurrency ?? []).map(c => c.currency))}
+          value={statsCurrency}
+          onChange={setStatsCurrency}
+          label="Show balances in"
+        />
+      )}
+
+      {/* Stats cards — 2-up on phones, scales up from there */}
+      {stats && (() => {
+        const cs = (stats.byCurrency ?? []).find(c => c.currency === statsCurrency) ?? (stats.byCurrency ?? [])[0];
+        const cur = cs?.currency;
+        const suffix = (stats.byCurrency ?? []).length > 1 && cur ? ` (${cur})` : '';
+        return (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+          {[
+            { label: `Total Wallet Balance${suffix}`, value: money(cs?.totalBalance ?? 0, cur),                 icon: DollarSign,      color: 'bg-blue-500'   },
+            { label: 'Total Wallets',        value: stats.totalWallets.toLocaleString(),               icon: Building2,       color: 'bg-indigo-500' },
+            { label: 'Pending Payouts',      value: stats.pendingPayouts.toString(),                   icon: Clock,           color: 'bg-yellow-500' },
+            { label: 'Pending Transfers',    value: stats.pendingTransfers.toString(),                 icon: ArrowLeftRight,  color: 'bg-orange-500' },
+            { label: `Today Credits${suffix}`, value: money(cs?.todayCredits ?? 0, cur),                 icon: CheckCircle,     color: 'bg-green-500'  },
+            { label: `Today Debits${suffix}`,  value: money(cs?.todayDebits ?? 0, cur),                  icon: XCircle,         color: 'bg-red-500'    },
+          ].map(card => (
+            <div key={card.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-3 sm:p-4">
+              <div className={`w-8 h-8 sm:w-9 sm:h-9 ${card.color} rounded-xl flex items-center justify-center mb-2 sm:mb-3`}>
+                <card.icon className="w-4 h-4 text-white" />
+              </div>
+              <div className="text-base sm:text-xl font-bold text-gray-900 leading-tight">{card.value}</div>
+              <div className="text-[11px] sm:text-xs text-gray-500 mt-0.5">{card.label}</div>
+            </div>
+          ))}
+        </div>
+        );
+      })()}
+
+      {/* Tab switcher — scrolls horizontally instead of wrapping on narrow screens */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-full overflow-x-auto no-scrollbar sm:w-fit">
+        {(['payouts', 'transfers', 'topups'] as TabId[]).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all whitespace-nowrap shrink-0 ${
+              tab === t
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t === 'payouts'    && <Building2     className="w-4 h-4" />}
+            {t === 'transfers'  && <ArrowLeftRight className="w-4 h-4" />}
+            {t === 'topups'     && <DollarSign     className="w-4 h-4" />}
+            <span>{t === 'payouts' ? 'Withdrawals' : t === 'transfers' ? 'Transfers' : 'Top-Ups'}</span>
+            {t === 'payouts' && stats?.pendingPayouts   ? (
+              <span className="ml-0.5 bg-yellow-400 text-yellow-900 text-xs font-bold px-1.5 py-0.5 rounded-full">
+                {stats.pendingPayouts}
+              </span>
+            ) : null}
+            {t === 'transfers' && stats?.pendingTransfers ? (
+              <span className="ml-0.5 bg-orange-400 text-orange-900 text-xs font-bold px-1.5 py-0.5 rounded-full">
+                {stats.pendingTransfers}
+              </span>
+            ) : null}
+            {t === 'topups' && topupPagination.total > 0 && topupStatus === 'PENDING' ? (
+              <span className="ml-0.5 bg-blue-400 text-blue-900 text-xs font-bold px-1.5 py-0.5 rounded-full">
+                {topupPagination.total}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {/* ── PAYOUTS TAB ──────────────────────────────────────────────────── */}
+      {tab === 'payouts' && (
+        <div className="bg-white sm:rounded-2xl sm:border sm:border-gray-100 sm:shadow-sm overflow-hidden">
+          {/* Status filter — horizontal scroll on mobile */}
+          <div className="flex items-center gap-2 px-1 sm:px-6 py-3 sm:py-4 sm:border-b sm:border-gray-100 overflow-x-auto no-scrollbar">
+            <Filter className="w-4 h-4 text-gray-400 shrink-0 hidden sm:block" />
+            <span className="text-sm text-gray-500 font-medium mr-1 shrink-0 hidden sm:inline">Filter:</span>
+            {PAYOUT_STATUSES.map(s => (
+              <button
+                key={s}
+                onClick={() => setPayoutStatus(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                  payoutStatus === s
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+            <div className="ml-auto text-xs text-gray-400 shrink-0 pr-1 hidden sm:block">{payoutPagination.total} records</div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-900 border-t-transparent" />
+            </div>
+          ) : payouts.length === 0 ? (
+            <div className="text-center py-16 sm:py-20 text-gray-400">
+              <Building2 className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">No {payoutStatus.toLowerCase()} payouts</p>
+            </div>
+          ) : (
+            <>
+              {/* Mobile: stacked cards */}
+              <div className="grid gap-3 px-1 sm:hidden">
+                {payouts.map(p => (
+                  <PayoutCard
+                    key={p.id}
+                    payout={p}
+                    onApprove={id => openModal('approve_payout', id)}
+                    onReject={id  => openModal('reject_payout',  id)}
+                    onComplete={id => openModal('complete_payout', id)}
+                  />
+                ))}
+              </div>
+              {/* Desktop: table */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['User', 'Amount', 'Bank Details', 'Status', 'Requested', 'Actions'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {payouts.map(p => (
+                      <PayoutRow
+                        key={p.id}
+                        payout={p}
+                        onApprove={id => openModal('approve_payout', id)}
+                        onReject={id  => openModal('reject_payout',  id)}
+                        onComplete={id => openModal('complete_payout', id)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* Pagination */}
+          {payoutPagination.pages > 1 && (
+            <div className="flex items-center justify-between px-1 sm:px-6 py-4 sm:border-t sm:border-gray-100 mt-1">
+              <span className="text-xs text-gray-500">
+                Page {payoutPagination.page} of {payoutPagination.pages}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  disabled={payoutPagination.page <= 1}
+                  onClick={() => loadPayouts(payoutPagination.page - 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  disabled={payoutPagination.page >= payoutPagination.pages}
+                  onClick={() => loadPayouts(payoutPagination.page + 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── TRANSFERS TAB ─────────────────────────────────────────────────── */}
+      {tab === 'transfers' && (
+        <div className="bg-white sm:rounded-2xl sm:border sm:border-gray-100 sm:shadow-sm overflow-hidden">
+          <div className="flex items-center gap-2 px-1 sm:px-6 py-3 sm:py-4 sm:border-b sm:border-gray-100 overflow-x-auto no-scrollbar">
+            <Filter className="w-4 h-4 text-gray-400 shrink-0 hidden sm:block" />
+            <span className="text-sm text-gray-500 font-medium mr-1 shrink-0 hidden sm:inline">Filter:</span>
+            {XFER_STATUSES.map(s => (
+              <button
+                key={s}
+                onClick={() => setXferStatus(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                  xferStatus === s
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+            <div className="ml-auto text-xs text-gray-400 shrink-0 pr-1 hidden sm:block">{xferPagination.total} records</div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-900 border-t-transparent" />
+            </div>
+          ) : transfers.length === 0 ? (
+            <div className="text-center py-16 sm:py-20 text-gray-400">
+              <ArrowLeftRight className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">No {xferStatus.toLowerCase()} transfers</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 px-1 sm:hidden">
+                {transfers.map(t => (
+                  <TransferCard
+                    key={t.id}
+                    transfer={t}
+                    onApprove={ref => openModal('approve_transfer', ref)}
+                    onReject={ref  => openModal('reject_transfer',  ref)}
+                  />
+                ))}
+              </div>
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['Sender', 'Recipient', 'Amount', 'Status', 'Initiated', 'Actions'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {transfers.map(t => (
+                      <TransferRow
+                        key={t.id}
+                        transfer={t}
+                        onApprove={ref => openModal('approve_transfer', ref)}
+                        onReject={ref  => openModal('reject_transfer',  ref)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {xferPagination.pages > 1 && (
+            <div className="flex items-center justify-between px-1 sm:px-6 py-4 sm:border-t sm:border-gray-100 mt-1">
+              <span className="text-xs text-gray-500">
+                Page {xferPagination.page} of {xferPagination.pages}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  disabled={xferPagination.page <= 1}
+                  onClick={() => loadTransfers(xferPagination.page - 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  disabled={xferPagination.page >= xferPagination.pages}
+                  onClick={() => loadTransfers(xferPagination.page + 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── WALLET TOP-UPS TAB ───────────────────────────────────────────── */}
+      {tab === 'topups' && (
+        <div className="bg-white sm:rounded-2xl sm:border sm:border-gray-100 sm:shadow-sm overflow-hidden">
+          <div className="flex items-center gap-2 px-1 sm:px-6 py-3 sm:py-4 sm:border-b sm:border-gray-100 overflow-x-auto no-scrollbar">
+            <Filter className="w-4 h-4 text-gray-400 shrink-0 hidden sm:block" />
+            <span className="text-sm text-gray-500 font-medium mr-1 shrink-0 hidden sm:inline">Filter:</span>
+            {(['PENDING', 'COMPLETED', 'FAILED', 'REJECTED', 'ALL'] as PayoutStatus[]).map(s => (
+              <button
+                key={s}
+                onClick={() => setTopupStatus(s)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors shrink-0 ${
+                  topupStatus === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+            <div className="ml-auto text-xs text-gray-400 shrink-0 pr-1 hidden sm:block">{topupPagination.total} records</div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-20">
+              <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-900 border-t-transparent" />
+            </div>
+          ) : topups.length === 0 ? (
+            <div className="text-center py-16 sm:py-20 text-gray-400">
+              <DollarSign className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="font-medium">No {topupStatus.toLowerCase()} top-ups</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-3 px-1 sm:hidden">
+                {topups.map(t => (
+                  <TopUpCard key={t.id} topup={t} onReconcile={id => openModal('reconcile_topup', id)} onReject={id => openModal('reject_topup', id)} />
+                ))}
+              </div>
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      {['User', 'Amount', 'Provider', 'Status', 'Initiated', 'Actions'].map(h => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {topups.map(t => (
+                      <TopUpRow key={t.id} topup={t} onReconcile={id => openModal('reconcile_topup', id)} onReject={id => openModal('reject_topup', id)} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {topupPagination.pages > 1 && (
+            <div className="flex items-center justify-between px-1 sm:px-6 py-4 sm:border-t sm:border-gray-100 mt-1">
+              <span className="text-xs text-gray-500">Page {topupPagination.page} of {topupPagination.pages}</span>
+              <div className="flex gap-2">
+                <button
+                  disabled={topupPagination.page <= 1}
+                  onClick={() => loadTopUps(topupPagination.page - 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+                <button
+                  disabled={topupPagination.page >= topupPagination.pages}
+                  onClick={() => loadTopUps(topupPagination.page + 1)}
+                  className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 hover:bg-gray-200 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Confirm modals */}
+      <ConfirmModal
+        open={modal.open && modal.type === 'approve_payout'}
+        title="Approve Payout"
+        body="This sends the money automatically through the payout provider for this user's country (Paystack/Flutterwave for bank accounts, Orange Money for Orange countries). Countries settled manually are marked paid instead."
+        placeholder="Optional note for the user…"
+        confirmLabel="Approve & Send"
+        confirmClass="bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'complete_payout'}
+        title="Mark as paid"
+        body="Only confirm after you have sent the money to the destination shown. The user will be told their withdrawal has been sent."
+        placeholder="Bank / mobile-money transaction reference (optional)…"
+        confirmLabel="Yes, it's paid"
+        confirmClass="bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'reject_payout'}
+        title="Reject Payout"
+        body="The user's balance will be refunded immediately. Please provide a reason."
+        placeholder="Reason for rejection…"
+        confirmLabel="Reject & Refund"
+        confirmClass="bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'approve_transfer'}
+        title="Approve Transfer"
+        body="The recipient will be credited immediately. The sender's balance was already debited."
+        placeholder="Optional note…"
+        confirmLabel="Approve Transfer"
+        confirmClass="bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'reject_transfer'}
+        title="Reject Transfer"
+        body="The sender's balance will be refunded. Please provide a reason for the rejection."
+        placeholder="Reason for rejection…"
+        confirmLabel="Reject & Refund"
+        confirmClass="bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'reject_topup'}
+        title="Reject Top-Up"
+        body="Use this when the customer's payment never arrived. The top-up will show as Rejected in their history and they'll be notified with your reason. We re-check with the provider first, so a payment that actually succeeded can't be rejected."
+        placeholder="Reason for rejection (shown to the customer)…"
+        confirmLabel="Reject Top-Up"
+        confirmClass="bg-red-600 hover:bg-red-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+      <ConfirmModal
+        open={modal.open && modal.type === 'reconcile_topup'}
+        title="Verify & Credit Top-Up"
+        body="We'll re-check this payment directly with the provider (Paystack, Flutterwave or Orange Money) before crediting. Only proceed if you can see this exact amount as a successful charge on the provider dashboard."
+        confirmLabel="Verify & Credit"
+        confirmClass="bg-green-600 hover:bg-green-700 text-white font-semibold px-4 py-2 rounded-lg"
+        onCancel={closeModal}
+        onConfirm={confirmAction}
+        loading={modal.loading}
+      />
+    </div>
+  );
+};
+
+export default PayoutManagement;

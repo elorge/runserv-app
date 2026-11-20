@@ -1,0 +1,1958 @@
+// backend/src/controllers/wallet.controller.js
+
+const prisma = require('../lib/prisma');
+const { debitWallet, creditWallet, claim, withClaim } = require('../services/walletOps');
+const { validationResult } = require('express-validator');
+const { AppError } = require('../middleware/errorHandler');
+const paymentService = require('../services/payment.service');
+const notificationService = require('../services/notification.service');
+const emailService = require('../services/email.service');
+const { logActivity } = require('../utils/auditLog');
+const { ensureWallet: ensureWalletShared, getWithdrawableBalance } = require('../utils/walletHelpers');
+const { getCountryForUser, getCurrencyForUserId, getPaymentConfigForUser, payoutRails } = require('../services/country.service');
+const orangeService = require('../services/orange.service');
+const { marketWhere } = require('../utils/marketScope');
+const { formatMoney, isWholeUnitCurrency } = require('../utils/currency');
+const { phoneCandidates } = require('../utils/phone');
+const countrySettingsService = require('../services/countrySettings.service');
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+
+// Delegates to the single shared implementation in utils/walletHelpers.js
+// so wallet creation currency logic lives in exactly one place. Kept as a
+// local wrapper named `ensureWallet` so every existing call site below
+// (there are several) needs no other changes.
+const ensureWallet = async (userId) => ensureWalletShared(userId);
+
+// Failed email should never block or roll back an already-committed wallet
+// operation — the DB write is the source of truth.
+const safeSendEmail = async (fn, label) => {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[wallet.controller] ${label} email failed to send:`, err.message);
+  }
+};
+
+// ─────────────────────────────────────────────
+// WALLET INFO
+// ─────────────────────────────────────────────
+
+exports.getWallet = async (req, res) => {
+  const wallet = await ensureWallet(req.user.id);
+  res.status(200).json({ success: true, data: { wallet } });
+};
+
+exports.getTransactions = async (req, res) => {
+  const { page = 1, limit = 20, type } = req.query;
+  const skip = (page - 1) * limit;
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!wallet) throw new AppError('Wallet not found', 404);
+
+  const where = { walletId: wallet.id };
+  if (type) where.type = type.toUpperCase();
+
+  const [transactions, total] = await Promise.all([
+    prisma.walletTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip:    parseInt(skip),
+      take:    parseInt(limit),
+    }),
+    prisma.walletTransaction.count({ where }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      wallet:      { balance: wallet.balance, currency: wallet.currency },
+      transactions,
+      pagination:  { total, page: parseInt(page), pages: Math.ceil(total / limit) },
+    },
+  });
+};
+
+exports.lookupUser = async (req, res) => {
+  const { phone: rawPhone } = req.query;
+  if (!rawPhone) throw new AppError('Phone number is required', 400);
+
+  // The client sends a bare local number (e.g. "0801...") while registration
+  // stores full E.164 (e.g. "+234801..."). Build every plausible E.164
+  // candidate using the requester's own country dial code, since transfers
+  // are effectively domestic today (cross-currency transfers are blocked
+  // further down this file anyway).
+  const country = await getCountryForUser(req.user);
+  const dialDigits = country.phoneDialCode.replace('+', '');
+
+  // phoneCandidates also covers Côte d'Ivoire / Benin, whose stored numbers keep
+  // the leading 0 (+2250712345678) — the old "strip the 0" rule never matched them.
+  const candidates = phoneCandidates(rawPhone, dialDigits, req.user.countryCode ?? 'NG');
+
+  if (candidates.includes(req.user.phone)) throw new AppError('Cannot look up yourself', 400);
+
+  const user = await prisma.user.findFirst({
+    where:  { phone: { in: candidates } },
+    select: { id: true, firstName: true, lastName: true, phone: true, isActive: true },
+  });
+
+  if (!user)          throw new AppError('No account found with this phone number', 404);
+  if (!user.isActive) throw new AppError('This account is currently inactive', 400);
+
+  res.status(200).json({
+    success: true,
+    data: { user: { firstName: user.firstName, lastName: user.lastName, phone: user.phone } },
+  });
+};
+
+// ─────────────────────────────────────────────
+// TOP-UP — Paystack
+// ─────────────────────────────────────────────
+
+exports.paystackTopup = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { amount } = req.body;
+  const chargeCurrency = await getCurrencyForUserId(req.user.id);
+  if (amount < 100) throw new AppError(`Minimum top-up amount is ${formatMoney(100, chargeCurrency)}`, 400);
+
+    const transaction = await paymentService.paystackInitialize({
+    email:    req.user.email,
+    amount,
+    currency: chargeCurrency,
+    metadata: { userId: req.user.id, purpose: 'wallet_topup' },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      authorizationUrl: transaction.authorization_url,
+      accessCode:       transaction.access_code,
+      reference:        transaction.reference,
+    },
+  });
+};
+
+exports.verifyPaystackTopup = async (req, res) => {
+  const { reference } = req.body;
+  if (!reference) throw new AppError('Payment reference is required', 400);
+
+  const myWallet = await ensureWallet(req.user.id);
+  const existing = await prisma.walletTransaction.findFirst({ where: { reference } });
+  // SECURITY: never reveal or touch another user's transaction.
+  if (existing && existing.walletId !== myWallet.id) throw new AppError('Transaction not found', 404);
+  if (existing?.status === 'COMPLETED') {
+    return res.status(200).json({ success: true, message: 'Already processed', data: { transaction: existing } });
+  }
+
+  // The reference the client has (the one we originally issued) may not be
+  // what Paystack settled the charge under — e.g. bank-transfer payments get
+  // a Paystack-generated reference instead. Try verifying by the given
+  // reference first; if Paystack doesn't recognize it, fall back to
+  // matching the client's own PENDING top-up by user + amount.
+  let transaction;
+  try {
+    transaction = await paymentService.paystackVerify(reference);
+  } catch (err) {
+    if (!existing) throw err; // nothing to fall back to — surface the real error
+    const fallback = await prisma.walletTransaction.findFirst({
+      where: {
+        walletId: existing.walletId,
+        status:   'PENDING',
+        type:     'CREDIT',
+        amount:   existing.amount,
+        provider: 'paystack',
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!fallback) throw err;
+    throw new AppError(
+      'We could not verify this reference directly. If you completed payment via bank transfer, please wait a moment for automatic confirmation, or contact support.',
+      400
+    );
+  }
+  if (transaction.status !== 'success') throw new AppError('Payment verification failed', 400);
+
+  const amount      = transaction.amount / 100;
+  const { userId }  = transaction.metadata;
+  if (userId !== req.user.id) throw new AppError('This payment does not belong to your account', 403);
+  const wallet      = myWallet;
+  const realRef     = transaction.reference; // the reference Paystack actually settled under
+
+  const pendingMatch = existing ?? await prisma.walletTransaction.findFirst({
+    where: {
+      walletId: wallet.id,
+      status:   'PENDING',
+      type:     'CREDIT',
+      amount,
+      provider: 'paystack',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const _claimed1 = await withClaim(prisma, pendingMatch?.id, [
+    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    pendingMatch
+      ? prisma.walletTransaction.update({
+          where: { id: pendingMatch.id },
+          data: {
+            status:      'COMPLETED',
+            amount,
+            description: 'Wallet top-up via Paystack',
+            reference:   realRef,
+            provider:    'paystack',
+          },
+        })
+      : prisma.walletTransaction.create({
+          data: {
+            walletId:    wallet.id,
+            type:        'CREDIT',
+            amount,
+            description: 'Wallet top-up via Paystack',
+            status:      'COMPLETED',
+            reference:   realRef,
+            provider:    'paystack',
+          },
+        }),
+  ]);
+  if (!_claimed1) return res.status(200).json({ success: true, message: 'Already processed' });
+  const [updatedWallet, walletTx] = _claimed1;
+
+  await notificationService.notify({
+    userId,
+    title:   'Wallet Topped Up 💰',
+    message: `${formatMoney(amount, updatedWallet.currency)} has been added to your wallet. New balance: ${formatMoney(updatedWallet.balance, updatedWallet.currency)}`,
+    type:    notificationService.TYPES.PAYMENT_RECEIVED,
+    data:    { amount, newBalance: updatedWallet.balance, reference: realRef },
+  });
+
+  res.status(200).json({ success: true, message: 'Wallet topped up successfully', data: { wallet: updatedWallet, transaction: walletTx } });
+};
+
+exports.initializeTopUp = async (req, res) => {
+  const { amount } = req.body;
+  const topUpCountry   = await getCountryForUser(req.user);
+  const chargeCurrency = topUpCountry.currencyCode;
+  if (!amount || amount <= 0) throw new AppError('Enter a valid top-up amount', 400);
+
+  // ── Per-country limits (country override → global → default) ──
+  const { min: minDeposit, max: maxDeposit } = await countrySettingsService.getTopUpLimits(topUpCountry.code);
+
+  if (amount < minDeposit)
+    throw new AppError(`Minimum top-up is ${formatMoney(minDeposit, chargeCurrency)}`, 400);
+  if (amount > maxDeposit)
+    throw new AppError(`Maximum top-up is ${formatMoney(maxDeposit, chargeCurrency)}`, 400);
+
+  const reference = `TOPUP-${req.user.id.slice(0, 8)}-${Date.now()}`;
+
+    const paystackRes = await paymentService.paystackInitialize({
+    email:       req.user.email,
+    amount,
+    currency:    chargeCurrency,
+    reference,
+    metadata:    { userId: req.user.id, type: 'wallet_topup', amount },
+    callbackUrl: `${process.env.API_BASE_URL}/api/wallet/topup/verify`,
+  });
+
+    const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+    if (wallet) {
+    await prisma.walletTransaction.create({
+      data: {
+        walletId:    wallet.id,
+        type:        'CREDIT',
+        amount,
+        description: 'Wallet top-up via Paystack',
+        status:      'PENDING',
+        reference,
+        provider:    'paystack',
+      },
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      authorizationUrl: paystackRes.authorization_url,
+      reference,
+      accessCode:       paystackRes.access_code,
+      limits: { min: minDeposit, max: maxDeposit },
+    },
+  });
+};
+
+exports.verifyTopUp = async (req, res) => {
+  const sig = req.headers['x-paystack-signature'];
+  const raw = req.rawBody;
+
+  if (sig && raw) {
+    if (!paymentService.validatePaystackWebhook(sig, raw)) {
+      return res.status(401).json({ success: false, message: 'Invalid webhook signature' });
+    }
+  } else if (sig && !raw) {
+    return res.status(400).json({ success: false, message: 'Raw body not available for signature check' });
+  }
+
+  let reference = req.body?.reference;
+  if (!reference && raw) {
+    try {
+      const event = JSON.parse(raw.toString());
+      reference = event?.data?.reference;
+    } catch { /* ignore */ }
+  }
+  if (!reference) return res.status(400).json({ success: false });
+
+  const existing = await prisma.walletTransaction.findUnique({ where: { reference } });
+  if (existing?.status === 'COMPLETED') {
+    return res.status(200).json({ success: true, message: 'Already processed' });
+  }
+
+    const verified = await paymentService.paystackVerifyTransaction(reference).catch(() => null);
+  if (!verified || verified.data.status !== 'success') {
+    return res.status(400).json({ success: false, message: 'Payment not successful' });
+  }
+
+  const amount = verified.data.amount / 100;
+  const userId = verified.data.metadata?.userId;
+  if (!userId) return res.status(400).json({ success: false, message: 'Missing userId in metadata' });
+
+  const wallet = await ensureWallet(userId);
+
+  // Paystack's bank-transfer channel issues its own reference distinct from
+  // the one we sent at initialize time, so `reference` here may not match
+  // any existing row. Fall back to matching the original PENDING row by
+  // wallet + amount + provider instead of by reference.
+  const existingByRef = await prisma.walletTransaction.findFirst({ where: { reference } });
+  const pendingMatch = existingByRef ?? await prisma.walletTransaction.findFirst({
+    where: {
+      walletId: wallet.id,
+      status:   'PENDING',
+      type:     'CREDIT',
+      amount,
+      provider: 'paystack',
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (pendingMatch?.status === 'COMPLETED') {
+    return res.status(200).json({ success: true, message: 'Already processed' });
+  }
+
+  if (!(await withClaim(prisma, pendingMatch?.id, [
+    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    pendingMatch
+      ? prisma.walletTransaction.update({
+          where: { id: pendingMatch.id },
+          data:  { status: 'COMPLETED', reference, provider: 'paystack' },
+        })
+      : prisma.walletTransaction.create({
+          data: {
+            walletId:    wallet.id,
+            type:        'CREDIT',
+            amount,
+            description: 'Wallet top-up via Paystack',
+            status:      'COMPLETED',
+            reference,
+            provider:    'paystack',
+          },
+        }),
+  ]))) return res.status(200).json({ success: true, message: 'Already processed' });
+
+  await notificationService.notify({
+    userId,
+    title:   'Wallet Credited 💰',
+    message: `${formatMoney(amount, wallet.currency)} added to your wallet. Ref: ${reference}`,
+    type:    notificationService.TYPES.WALLET_CREDITED,
+    data:    { amount, reference },
+  });
+
+  res.status(200).json({ success: true });
+};
+
+// ─────────────────────────────────────────────
+// TOP-UP — Orange Money
+// ─────────────────────────────────────────────
+//
+// Orange markets credit their wallet through Orange's hosted Web Payment
+// page rather than a card checkout. The shape mirrors the Paystack /
+// Flutterwave flows above, so the mobile top-up screen only has to swap
+// which endpoint it calls, not how it behaves.
+
+// XOF, XAF and GNF have no minor unit, so a decimal amount is a client bug
+// rather than a rounding question. Reject it loudly instead of silently
+// truncating the customer's money.
+const assertWholeUnits = (amount, currency) => {
+  if (isWholeUnitCurrency(currency) && !Number.isInteger(Number(amount))) {
+    throw new AppError(`${currency} amounts must be whole numbers.`, 400);
+  }
+};
+
+const assertOrangeAvailable = async (user) => {
+  const config = await getPaymentConfigForUser(user);
+  if (!config.creditMethods.includes('ORANGE_MONEY')) {
+    throw new AppError(`Orange Money is not available in ${config.countryName}.`, 400);
+  }
+  if (!orangeService.isOrangeConfigured()) {
+    throw new AppError('Orange Money is not activated yet. Please use another payment method.', 503);
+  }
+  return config;
+};
+
+exports.orangeTopup = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { amount } = req.body;
+  const country = await getCountryForUser(req.user);
+  await assertOrangeAvailable(req.user);
+
+  const currency = country.currencyCode;
+  assertWholeUnits(amount, currency);
+
+  // Same admin-configured limits the Paystack flow respects, so a market
+  // switching rails doesn't quietly lose its deposit caps.
+  const { min: minDeposit, max: maxDeposit } = await countrySettingsService.getTopUpLimits(country.code);
+
+  if (amount < minDeposit) throw new AppError(`Minimum top-up is ${formatMoney(minDeposit, currency)}`, 400);
+  if (amount > maxDeposit) throw new AppError(`Maximum top-up is ${formatMoney(maxDeposit, currency)}`, 400);
+
+  const orderId = `OM-TOPUP-${req.user.id.slice(0, 8)}-${Date.now()}`;
+
+  const session = await orangeService.initializeWebPayment({
+    amount,
+    orderId,
+    currency,
+    countryCode: country.code,
+    config:      country.providerConfig?.orange ?? {},
+    notifUrl:    `${process.env.API_BASE_URL}/api/wallet/topup/orange/webhook`,
+    reference:   'Wallet top-up',
+  });
+
+  // Persist pay_token — Orange's status endpoint needs it later and there is
+  // no way to recover it from the order_id alone.
+  const wallet = await ensureWallet(req.user.id);
+  await prisma.walletTransaction.create({
+    data: {
+      walletId:    wallet.id,
+      type:        'CREDIT',
+      amount,
+      description: 'Wallet top-up via Orange Money',
+      status:      'PENDING',
+      reference:   orderId,
+      provider:    'orange',
+      providerRef: session.payToken,
+    },
+  });
+
+  res.status(200).json({
+    success: true,
+    data: {
+      paymentUrl: session.paymentUrl,
+      orderId,
+      payToken:   session.payToken,
+      limits:     { min: minDeposit, max: maxDeposit },
+    },
+  });
+};
+
+/**
+ * Shared credit path used by BOTH the client-driven verify and the Orange
+ * webhook. Idempotent on the PENDING WalletTransaction row, so a webhook and
+ * a user tapping "I've paid" at the same moment can't double-credit.
+ */
+const creditOrangeTopUp = async (orderId) => {
+  const pending = await prisma.walletTransaction.findUnique({ where: { reference: orderId } });
+  if (!pending) return { ok: false, reason: 'Unknown Orange order' };
+  if (pending.status === 'COMPLETED') return { ok: true, alreadyProcessed: true };
+
+  const wallet = await prisma.wallet.findUnique({ where: { id: pending.walletId } });
+  if (!wallet) return { ok: false, reason: 'Wallet not found' };
+
+  const user = await prisma.user.findUnique({
+    where:  { id: wallet.userId },
+    select: { id: true, countryCode: true },
+  });
+  const country = await getCountryForUser(user);
+
+  // Never trust the callback payload's status — always re-ask Orange.
+  const status = await orangeService.getTransactionStatus({
+    orderId,
+    amount:      pending.amount,
+    payToken:    pending.providerRef,
+    countryCode: country.code,
+    config:      country.providerConfig?.orange ?? {},
+  });
+
+  if (status.isPending) return { ok: false, pending: true, reason: 'Payment still pending with Orange' };
+
+  if (!status.isSuccess) {
+    await prisma.walletTransaction.update({ where: { id: pending.id }, data: { status: 'FAILED' } });
+    return { ok: false, reason: `Orange reported status ${status.status}` };
+  }
+
+  const _c3 = await withClaim(prisma, pending.id, [
+    prisma.wallet.update({ where: { id: wallet.id }, data: { balance: { increment: pending.amount } } }),
+    prisma.walletTransaction.update({
+      where: { id: pending.id },
+      data:  { status: 'COMPLETED', providerRef: status.txnId ?? pending.providerRef },
+    }),
+  ]);
+  if (!_c3) return { ok: true, alreadyProcessed: true };
+  const [updatedWallet] = _c3;
+
+  await notificationService.notify({
+    userId:  wallet.userId,
+    title:   'Wallet Credited 💰',
+    message: `${formatMoney(pending.amount, updatedWallet.currency)} added to your wallet via Orange Money. Ref: ${orderId}`,
+    type:    notificationService.TYPES.WALLET_CREDITED,
+    data:    { amount: pending.amount, reference: orderId, provider: 'orange' },
+  });
+
+  return { ok: true, wallet: updatedWallet, amount: pending.amount };
+};
+
+exports.verifyOrangeTopup = async (req, res) => {
+  const orderId = req.body?.orderId || req.body?.reference;
+  if (!orderId) throw new AppError('Orange order ID is required', 400);
+
+  // SECURITY: only the owner of the order may trigger its verification.
+  const owned = await prisma.walletTransaction.findUnique({
+    where:   { reference: orderId },
+    include: { wallet: { select: { userId: true } } },
+  });
+  if (!owned || owned.wallet.userId !== req.user.id) throw new AppError('Top-up not found', 404);
+
+  const result = await creditOrangeTopUp(orderId);
+
+  if (!result.ok) {
+    // A still-pending Orange payment isn't a user error — 202 lets the app
+    // poll again instead of showing a failure.
+    const code = result.pending ? 202 : 400;
+    return res.status(code).json({ success: false, pending: !!result.pending, message: result.reason });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: result.alreadyProcessed ? 'Already processed' : 'Wallet topped up successfully',
+    data:    { wallet: result.wallet },
+  });
+};
+
+/**
+ * Orange notif_url callback. Public route — authentication comes from the
+ * notif_token HMAC we derived from the order_id at checkout creation.
+ * Always 200s once the signature checks out so Orange stops retrying.
+ */
+exports.orangeWebhook = async (req, res) => {
+  const orderId    = req.body?.order_id    ?? req.body?.orderId;
+  const notifToken = req.body?.notif_token ?? req.body?.notifToken;
+
+  if (!orangeService.validateWebhook(orderId, notifToken)) {
+    return res.status(401).json({ success: false, message: 'Invalid Orange notification token' });
+  }
+
+  try {
+    const result = await creditOrangeTopUp(orderId);
+    if (!result.ok && !result.pending) {
+      console.warn('[wallet.controller] Orange webhook could not credit', orderId, result.reason);
+    }
+  } catch (err) {
+    console.error('[wallet.controller] Orange webhook failed:', err.message);
+  }
+
+  // Ack regardless — a retry storm helps nobody, and both the client-side
+  // verify and the admin reconciliation screen cover a missed credit.
+  res.sendStatus(200);
+};
+
+// ─────────────────────────────────────────────
+// TOP-UP — Flutterwave
+// ─────────────────────────────────────────────
+
+exports.flutterwaveTopup = async (req, res) => {
+  const { amount } = req.body;
+  const { email, phone, firstName, lastName, id: userId } = req.user;
+  const chargeCurrency = await getCurrencyForUserId(userId);
+
+  if (amount < 100) throw new AppError(`Minimum top-up amount is ${formatMoney(100, chargeCurrency)}`, 400);
+
+  const txRef = `WALLET-FLW-${userId}-${Date.now()}`;
+  const transaction = await paymentService.flutterwaveInitialize({
+    email,
+    phone:    phone || '',          // ← guard: phone may not be on req.user
+    name:     `${firstName} ${lastName}`,
+    amount,
+    txRef,
+    currency: chargeCurrency,
+    metadata: { userId, purpose: 'wallet_topup' },
+  });
+
+    const wallet = await ensureWallet(userId);
+  await prisma.walletTransaction.create({
+    data: {
+      walletId:    wallet.id,
+      type:        'CREDIT',
+      amount,
+      description: 'Wallet top-up via Flutterwave',
+      status:      'PENDING',
+      reference:   txRef,
+      provider:    'flutterwave',
+    },
+  });
+
+  res.status(200).json({ success: true, data: { paymentLink: transaction.link, txRef } });
+};
+
+exports.verifyFlutterwaveTopup = async (req, res) => {
+  const { transactionId } = req.body;
+  if (!transactionId) throw new AppError('Transaction ID is required', 400);
+
+  // The client may send back either our own tx_ref (WALLET-FLW-...) or
+  // Flutterwave's internal numeric id, depending on the redirect payload —
+  // check both so we don't create a duplicate orphan row for the same top-up.
+  // SECURITY: both lookups are scoped to the caller's own wallet. Previously the
+  // PENDING fallback matched ANY user's pending Flutterwave top-up, so one user's
+  // verification could complete (and mis-credit) someone else's row.
+  const myWallet = await ensureWallet(req.user.id);
+  const existing =
+    (await prisma.walletTransaction.findFirst({
+      where: { walletId: myWallet.id, provider: 'flutterwave', reference: String(transactionId) },
+    })) ??
+    (await prisma.walletTransaction.findFirst({
+      where: {
+        walletId:  myWallet.id,
+        provider:  'flutterwave',
+        status:    'PENDING',
+        reference: { startsWith: 'WALLET-FLW-' },
+      },
+      orderBy: { createdAt: 'desc' },
+    }));
+  if (existing?.status === 'COMPLETED') {
+    return res.status(200).json({ success: true, message: 'Already processed', data: { transaction: existing } });
+  }
+
+  // Verify against Flutterwave using whichever reference we actually have —
+  // prefer the original tx_ref on the matched PENDING row if we found one.
+  const verifyRef = existing?.reference ?? String(transactionId);
+  const transaction = await paymentService.flutterwaveVerifyByReference(verifyRef);
+  if (transaction.status !== 'successful') throw new AppError('Payment verification failed', 400);
+
+  const amount     = transaction.amount;
+  const { userId } = transaction.meta || {};
+  // The payment must belong to the person claiming it.
+  if (userId !== req.user.id) throw new AppError('This payment does not belong to your account', 403);
+  const wallet     = myWallet;
+
+  const _c4 = await withClaim(prisma, existing?.id, [
+    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    existing
+      ? prisma.walletTransaction.update({
+          where: { id: existing.id },
+          data:  { status: 'COMPLETED', amount, provider: 'flutterwave' },
+        })
+      : prisma.walletTransaction.create({
+          data: {
+            walletId:    wallet.id,
+            type:        'CREDIT',
+            amount,
+            description: 'Wallet top-up via Flutterwave',
+            status:      'COMPLETED',
+            reference:   String(transactionId),
+            provider:    'flutterwave',
+          },
+        }),
+  ]);
+  if (!_c4) return res.status(200).json({ success: true, message: 'Already processed' });
+  const [updatedWallet, walletTx] = _c4;
+
+  await notificationService.notify({
+    userId,
+    title:   'Wallet Topped Up 💰',
+    message: `${formatMoney(amount, updatedWallet.currency)} has been added to your wallet. New balance: ${formatMoney(updatedWallet.balance, updatedWallet.currency)}`,
+    type:    notificationService.TYPES.PAYMENT_RECEIVED,
+    data:    { amount, newBalance: updatedWallet.balance },
+  });
+
+  res.status(200).json({ success: true, message: 'Wallet topped up successfully', data: { wallet: updatedWallet, transaction: walletTx } });
+};
+
+exports.verifyFlutterwaveWebhook = async (req, res) => {
+  const signature = req.headers['verif-hash'];
+  if (!paymentService.validateFlutterwaveWebhook(signature)) {
+    return res.status(401).json({ success: false, message: 'Invalid signature' });
+  }
+
+  const { event, data } = req.body;
+
+  // Flutterwave only lets an account have ONE webhook URL, so the result of a
+  // withdrawal transfer can arrive here instead of /payments/flutterwave/webhook.
+  // Handle it in both places (idempotent) so a failed payout is always refunded.
+  if (event === 'transfer.completed') {
+    const status = String(data?.status || '').toUpperCase();
+    if (status === 'SUCCESSFUL' || status === 'FAILED') {
+      await require('../services/payoutSettlement.service').applyTransferResult({
+        reference:    data?.reference,
+        outcome:      status === 'SUCCESSFUL' ? 'SUCCESS' : 'FAILED',
+        message:      data?.complete_message,
+        transferCode: data?.id != null ? String(data.id) : undefined,
+      });
+    }
+    return res.sendStatus(200);
+  }
+
+  if (event !== 'charge.completed' || data?.status !== 'successful') {
+    return res.sendStatus(200); // ack, nothing to do
+  }
+
+  const txRef = data.tx_ref;
+  if (!txRef || !txRef.startsWith('WALLET-FLW-')) {
+    return res.sendStatus(200); // not a wallet top-up event, ignore
+  }
+
+  const existing = await prisma.walletTransaction.findFirst({ where: { reference: txRef } });
+  if (existing?.status === 'COMPLETED') {
+    return res.sendStatus(200);
+  }
+
+  const verified = await paymentService.flutterwaveVerifyByReference(txRef).catch(() => null);
+  if (!verified || verified.status !== 'successful') {
+    return res.sendStatus(200); // don't credit on unverified webhook payload alone
+  }
+
+  const amount = verified.amount;
+  const userId = verified.meta?.userId;
+  if (!userId) return res.sendStatus(200);
+
+  const wallet = await ensureWallet(userId);
+  // What the provider says it collected must match what we asked for, in the same currency and for the same person.
+  if (existing && (Number(existing.amount) !== Number(amount) || existing.walletId !== wallet.id
+      || (verified.currency && wallet.currency && String(verified.currency).toUpperCase() !== String(wallet.currency).toUpperCase()))) {
+    console.error('[flutterwave webhook] amount/currency/owner mismatch — not credited', txRef);
+    return res.sendStatus(200);
+  }
+
+  if (!(await withClaim(prisma, existing?.id, [
+    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    existing
+      ? prisma.walletTransaction.update({
+          where: { id: existing.id },
+          data:  { status: 'COMPLETED', provider: 'flutterwave' },
+        })
+      : prisma.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            type: 'CREDIT',
+            amount,
+            description: 'Wallet top-up via Flutterwave',
+            status: 'COMPLETED',
+            reference: txRef,
+            provider: 'flutterwave',
+          },
+        }),
+  ]))) return res.sendStatus(200);
+
+  await notificationService.notify({
+    userId,
+    title: 'Wallet Credited 💰',
+    message: `${formatMoney(amount, wallet.currency)} added to your wallet. Ref: ${txRef}`,
+    type: notificationService.TYPES.WALLET_CREDITED,
+    data: { amount, reference: txRef },
+  });
+
+  res.sendStatus(200);
+};
+
+exports.transfer = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { recipientPhone, amount, note } = req.body;
+
+  if (amount <= 0)                       throw new AppError('Amount must be greater than 0', 400);
+  if (recipientPhone === req.user.phone) throw new AppError('Cannot transfer to yourself', 400);
+
+  const recipient = await prisma.user.findUnique({ where: { phone: recipientPhone } });
+  if (!recipient)          throw new AppError('Recipient not found', 404);
+  if (!recipient.isActive) throw new AppError('Recipient account is not active', 400);
+
+    const senderWallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!senderWallet) throw new AppError('Wallet not found', 404);
+
+  const MIN_TRANSFER = await countrySettingsService.getSetting(req.user.countryCode ?? 'NG', 'transfer_min');
+  if (amount < MIN_TRANSFER) {
+    throw new AppError(`Minimum transfer is ${formatMoney(MIN_TRANSFER, senderWallet.currency)}`, 400);
+  }
+  if (senderWallet.balance < amount) {
+    throw new AppError('Insufficient wallet balance', 400);
+  }
+
+  // Guard: sender and recipient may be in different countries/currencies
+  // now that Country is seeded beyond NG. A raw balance move here would
+  // otherwise turn a ₦5,000 debit into a 5,000 GHS credit for the recipient.
+  const recipientWallet = await prisma.wallet.findUnique({ where: { userId: recipient.id } });
+  if (recipientWallet && recipientWallet.currency !== senderWallet.currency) {
+    throw new AppError('Cross-currency transfers are not supported yet.', 400);
+  }
+
+  const reference = `TRF-${Date.now()}-${req.user.id.slice(0, 6)}`;
+
+  await prisma.$transaction(async (tx) => {
+    await debitWallet(tx, { userId: req.user.id }, amount);
+    const _r = [null];
+    _r.push(await tx.transfer.create({
+      data: {
+        reference,
+        senderId:    req.user.id,
+        recipientId: recipient.id,
+        amount,
+        note:        note ?? null,
+        status:      'PENDING',
+      },
+    }));
+    _r.push(await tx.walletTransaction.create({
+      data: {
+        walletId:    senderWallet.id,
+        type:        'DEBIT',
+        amount,
+        description: `[PENDING] Transfer to ${recipient.firstName} ${recipient.lastName}${note ? `. Note: ${note}` : ''}`,
+        status:      'PENDING',
+        reference,
+      },
+    }));
+    return _r;
+  });
+
+  // A self-initiated transfer already debits the sender's wallet
+  // (pending admin approval below). Worth its own audit entry distinct from
+  // the WalletTransaction row, especially since it names a specific
+  // recipient — a pattern worth watching for account-to-account fraud.
+  logActivity({
+    userId:     req.user.id,
+    action:     'wallet_transfer_requested_self',
+    entityType: 'Transfer',
+    entityId:   reference,
+    details:    { amount, recipientId: recipient.id, recipientPhone, reference },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   'Transfer Pending ⏳',
+    message: `${formatMoney(amount, senderWallet.currency)} transfer to ${recipient.firstName} ${recipient.lastName} is pending admin approval.`,
+    type:    notificationService.TYPES.PAYMENT_RECEIVED,
+    data:    { amount, recipientId: recipient.id, reference },
+  });
+
+  if (req.user.email) {
+    await safeSendEmail(
+      () => emailService.sendTransferPendingEmail(req.user.email, req.user.firstName, {
+        amount,
+        recipientName: `${recipient.firstName} ${recipient.lastName}`,
+        reference,
+        note,
+      }),
+      'Transfer pending'
+    );
+  }
+
+  const admins = await prisma.user.findMany({
+    where:  { role: { in: ['ADMIN', 'SUPER_ADMIN'] }, isActive: true },
+    select: { id: true },
+  });
+  await Promise.allSettled(
+    admins.map(a =>
+      notificationService.notify({
+        userId:  a.id,
+        title:   'New Transfer Request 💸',
+        message: `${req.user.firstName} ${req.user.lastName} → ${recipient.firstName} ${recipient.lastName}: ${formatMoney(amount, senderWallet.currency)}`,
+        type:    'transfer_pending',
+        data:    { reference, senderId: req.user.id, recipientId: recipient.id, amount },
+      })
+    )
+  );
+
+  res.status(200).json({
+    success: true,
+    message: `Transfer of ${formatMoney(amount, senderWallet.currency)} submitted and pending admin approval. Funds held from your balance.`,
+    data:    { reference, amount, recipientName: `${recipient.firstName} ${recipient.lastName}` },
+  });
+};
+
+// ─────────────────────────────────────────────
+// WITHDRAWAL (bank payout — admin approval flow)
+// ─────────────────────────────────────────────
+
+exports.withdraw = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { amount, accountNumber, bankCode, accountName, mobileNumber, bankName: typedBankName, rail: requestedRail } = req.body;
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!wallet) throw new AppError('Wallet not found', 404);
+
+  const country = await getCountryForUser(req.user);
+
+  // Min / max / fee / on-off are per country. `plan.gross` leaves the wallet;
+  // `plan.net` (gross minus fee) is what the payout provider is asked to send.
+  const plan = await countrySettingsService.planWithdrawal({
+    countryCode: country.code, role: req.user.role, amount, currency: wallet.currency,
+  });
+  if (wallet.balance < amount) throw new AppError('Insufficient wallet balance', 400);
+
+  // Onboarding bonuses are credited as "non-withdrawable" (they exist so a new
+  // driver can accept jobs). The bonus screen promises that, but this endpoint
+  // only ever looked at the raw balance, so the bonus could be cashed out.
+  const withdrawable = await getWithdrawableBalance(wallet);
+  if (withdrawable < amount) {
+    throw new AppError(
+      `You can withdraw up to ${formatMoney(withdrawable, wallet.currency)}. The rest of your balance is an onboarding bonus that can only be used to accept jobs.`,
+      400
+    );
+  }
+
+  const payoutMethods = country.payoutMethods;
+
+  // A market is payout-capable once it has at least one real rail. Markets
+  // still on UNSUPPORTED fail clearly here rather than sending an
+  // unroutable account number into a transfer API downstream. Mirrors the
+  // guard in driver.controller.js / partner.controller.js's requestPayout.
+  if (!payoutMethods.some(m => m !== 'UNSUPPORTED')) {
+    throw new AppError(`Payouts for ${country.name} aren't supported yet. Contact support.`, 400);
+  }
+
+  // A country can offer several payout options (e.g. Orange Money OR a bank
+  // account). The person picks one; the server only accepts options the country
+  // actually has, and routes the payout by what was chosen — never by the country
+  // alone. No `rail` sent (older app) = the country's default option.
+  const rails = payoutRails(country);
+  const rail  = requestedRail ? String(requestedRail).toUpperCase() : rails[0];
+  if (!rails.includes(rail)) {
+    throw new AppError('That payout option is not available in your country.', 400);
+  }
+  const isOrangePayout = rail === 'ORANGE';
+  const isMomoPayout   = rail === 'MOMO';      // Flutterwave wallet (Ghana: MTN / Vodafone / AirtelTigo)
+  const isManualPayout = rail === 'MANUAL';    // typed details, admin pays by hand
+
+  // ── Normalise the destination per rail ────────────────────────────────────
+  // Orange markets pay out to an Orange Money wallet, so the "account
+  // number" is an MSISDN and there is no bank code to resolve. Bank markets
+  // keep the existing NUBAN behaviour untouched.
+  let destination, resolvedBankCode, bankName, payoutMethod;
+
+  if (isOrangePayout) {
+    const raw = mobileNumber || accountNumber;
+    if (!raw) throw new AppError('Your Orange Money number is required', 400);
+    if (!orangeService.isValidMsisdn(raw, country.code)) {
+      throw new AppError('That does not look like a valid Orange Money number for your country.', 400);
+    }
+    destination      = orangeService.normalizeMsisdn(raw, country.code);
+    resolvedBankCode = 'ORANGE_MONEY';
+    bankName         = 'Orange Money';
+    payoutMethod     = 'ORANGE_MONEY';
+  } else if (isMomoPayout) {
+    const { isValidMsisdn, normalizeMsisdn } = require('../utils/msisdn');
+    const raw = mobileNumber || accountNumber;
+    if (!raw) throw new AppError('Your mobile-money number is required', 400);
+    if (!isValidMsisdn(raw, country.code)) {
+      throw new AppError('That does not look like a valid mobile-money number for your country.', 400);
+    }
+    // The network must be one we can actually pay — never trust the client's code.
+    const network = paymentService.momoNetworksFor(country.code).find(n => n.key === bankCode);
+    if (!network) throw new AppError('Choose your mobile-money network (for example MTN).', 400);
+    destination      = normalizeMsisdn(raw, country.code);
+    resolvedBankCode = network.key;
+    bankName         = network.name;
+    payoutMethod     = 'MOBILE_MONEY';
+  } else if (isManualPayout) {
+    const num  = String(accountNumber || mobileNumber || '').trim();
+    const bank = String(typedBankName || '').trim();
+    const name = String(accountName || '').trim();
+    if (num.length < 6 || num.length > 34) throw new AppError('Enter a valid account or mobile-money number', 400);
+    if (!bank) throw new AppError('Enter the name of your bank or mobile-money provider', 400);
+    if (name.length < 3) throw new AppError('Enter the name on the account', 400);
+    destination      = num;
+    resolvedBankCode = 'MANUAL';
+    bankName         = bank.slice(0, 80);
+    payoutMethod     = 'MANUAL';
+  } else {
+    // ── BANK ──
+    if (!accountNumber || !bankCode) throw new AppError('Account number and bank code are required', 400);
+    const isNg = country.code === 'NG';
+
+    if (isNg) {
+      destination  = accountNumber;
+      bankName     = await paymentService.resolveBankName(bankCode, country.code);
+      payoutMethod = payoutMethods.find(m => ['NG_BANK_TRANSFER', 'BANK_TRANSFER'].includes(m)) || 'NG_BANK_TRANSFER';
+    } else {
+      // Outside Nigeria nothing can look up the account holder, so the person's
+      // own typed name is required; the admin sees it flagged as unverified.
+      const num = String(accountNumber).replace(/\s+/g, '');
+      if (!/^[A-Za-z0-9-]{6,34}$/.test(num)) throw new AppError('Enter a valid bank account number', 400);
+      if (String(accountName || '').trim().length < 3) throw new AppError('Enter the name on the account', 400);
+      // Never trust a client-supplied bank code: it must be in the provider's list.
+      bankName = await paymentService.resolveBankName(bankCode, country.code, 'flutterwave');
+      if (!bankName) throw new AppError('Choose your bank from the list.', 400);
+      destination  = num;
+      payoutMethod = 'BANK_TRANSFER';
+    }
+    resolvedBankCode = bankCode;
+  }
+
+  const reference = `WD-${Date.now()}-${req.user.id.slice(0, 6)}`;
+
+  // ← CHANGED — capture the transaction results (was previously discarded)
+  // so we can attach the created Payout's id to the audit log entry below.
+  const [, , payoutRecord] = await prisma.$transaction(async (tx) => {
+    await debitWallet(tx, { userId: req.user.id }, amount);
+    const _r = [null];
+    _r.push(await tx.walletTransaction.create({
+      data: {
+        walletId:    wallet.id,
+        type:        'WITHDRAWAL',
+        amount,
+        description: `Withdrawal request to ${accountName || destination} — ${destination} (${bankName || resolvedBankCode})`,
+        status:      'PENDING',
+        reference,
+        provider:    paymentService.providerForMethod(payoutMethod, country),
+      },
+    }));
+    _r.push(await tx.payout.create({
+      data: {
+        userId:        req.user.id,
+        amount:        plan.net,
+        currency:      wallet.currency,
+        accountNumber: destination,
+        bankCode:      resolvedBankCode,
+        bankName,
+        // Orange gives us no subscriber name, so fall back to the requester's
+        // own name rather than storing an empty string on the payout record.
+        accountName:   accountName || `${req.user.firstName} ${req.user.lastName}`.trim(),
+        status:        'PENDING',
+        reference,
+        payoutMethod,
+        payoutDetails: {
+          ...(isOrangePayout
+            ? { rail: 'ORANGE_MONEY', msisdn: destination, countryCode: country.code, autoSettle: orangeService.isB2CEnabled() }
+            : { rail: payoutMethod, countryCode: country.code, ...(isManualPayout && { manual: true }), ...(isMomoPayout && { msisdn: destination }), ...(payoutMethod === 'BANK_TRANSFER' && { nameVerified: false }) }),
+          // amount above is the NET sent to the provider; these let a
+          // rejection refund the full gross the wallet was debited.
+          grossAmount: plan.gross,
+          fee:         plan.fee,
+        },
+      },
+    }));
+    return _r;
+  });
+
+  logActivity({
+    userId:     req.user.id,
+    action:     'payout_requested',
+    entityType: 'Payout',
+    entityId:   payoutRecord.id,
+    details: {
+      role:          req.user.role,
+      amount,
+      bankCode:      resolvedBankCode,
+      payoutMethod,
+      countryCode:   country.code,
+      accountNumber: `****${destination.slice(-4)}`,
+      reference,
+    },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  req.user.id,
+    title:   'Withdrawal Requested 🏦',
+    message: `${formatMoney(amount, wallet.currency)} withdrawal to ${bankName} is pending admin review.`,
+    type:    notificationService.TYPES.PAYMENT_RECEIVED,
+    data:    { amount, accountNumber: `****${destination.slice(-4)}`, bankCode: resolvedBankCode, payoutMethod, reference },
+  });
+
+  if (req.user.email) {
+    await safeSendEmail(
+      () => emailService.sendWithdrawalUnderReviewEmail(req.user.email, req.user.firstName, {
+        amount, reference,
+        accountName:   accountName || bankName,
+        accountNumber: destination,
+      }),
+      'Withdrawal under review'
+    );
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Withdrawal request submitted. Our team will process it within 1–2 business days.',
+    data:    { reference, amount, fee: plan.fee, net: plan.net },
+  });
+};
+
+exports.verifyBankAccount = async (req, res) => {
+  const { accountNumber, bankCode, rail } = req.query;
+  if (!accountNumber || !bankCode) throw new AppError('Account number and bank code required', 400);
+
+  const country = await getCountryForUser(req.user);
+  const result = await paymentService.verifyBankAccountUnified(accountNumber, bankCode, country.code, country, rail ? String(rail).toUpperCase() : null);
+  if (!result) throw new AppError('Account not found', 404);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      accountName:    result.account_name,
+      accountNumber:  result.account_number,
+      // Orange can't confirm the wallet holder's name — the client shows a
+      // "double-check this number" hint instead of a green verified state.
+      unverifiedName: !!result.unverifiedName,
+    },
+  });
+};
+
+// ─────────────────────────────────────────────
+// ADMIN — Payout management
+// ─────────────────────────────────────────────
+
+exports.adminGetPayouts = async (req, res) => {
+  const { status = 'PENDING', page = 1, limit = 20, country } = req.query;
+  const skip  = (page - 1) * limit;
+  const where = {};
+  const payoutMarket = marketWhere(req.user, country);
+  if (payoutMarket) where.user = payoutMarket;
+  if (status !== 'ALL') where.status = status;
+
+  const [payouts, total] = await Promise.all([
+    prisma.payout.findMany({
+      where,
+      include: {
+        user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, role: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip:    parseInt(skip),
+      take:    parseInt(limit),
+    }),
+    prisma.payout.count({ where }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: { payouts, pagination: { total, page: parseInt(page), pages: Math.ceil(total / limit) } },
+  });
+};
+
+exports.adminApprovePayout = async (req, res) => {
+  const { id }   = req.params;
+  const { note } = req.body;
+
+  const payout = await prisma.payout.findUnique({ where: { id }, include: { user: true } });
+  if (!payout)                     throw new AppError('Payout not found', 404);
+  // PROCESSING = approved earlier but the transfer didn't go through. Allow the
+  // admin to retry it; before, that state was a dead end.
+  if (!['PENDING', 'PROCESSING'].includes(payout.status)) throw new AppError('Payout is not awaiting approval', 400);
+  if (payout.status === 'PROCESSING' && payout.transferCode) {
+    throw new AppError('A transfer was already started for this payout. Check the provider dashboard, then use "Mark as paid" instead of retrying (retrying could pay twice).', 409);
+  }
+
+  if (payout.userId === req.user.id) throw new AppError('You cannot approve your own withdrawal. Ask another admin.', 403);
+
+  // Claim the payout BEFORE calling the provider. Two admins (or two clicks) both read the same pending row; only the
+  // one whose update still matches what was read may start the real bank transfer. (updatedAt changes on every write.)
+  const claimed = await claim(prisma.payout, { id, status: payout.status, updatedAt: payout.updatedAt, transferCode: null }, { status: 'PROCESSING', transferError: null });
+  if (!claimed) throw new AppError('Another admin is already handling this payout. Refresh the list.', 409);
+
+  let transferCode  = null;
+  let transferError = null;
+  let providerOk    = false;
+
+  // Route by the payout owner's country, not a single global provider —
+  // an Orange market settles through Orange Money cash-out while a
+  // Nigerian payout still goes out over Paystack/Flutterwave.
+  const payoutCountry = await getCountryForUser(payout.user);
+  // By the method the user chose (stored on the payout); old rows without one fall
+  // back to the country-level rule.
+  let provider = paymentService.resolvePayoutProviderForCountry(payoutCountry, payout.payoutMethod);
+
+  try {
+    if (provider === 'manual') {
+      throw new AppError(`${payoutCountry.name} payouts are settled manually: send ${payout.amount} ${payout.currency} to ${payout.bankName} · ${payout.accountNumber} (${payout.accountName}), then press "Mark as paid".`, 409);
+    }
+    const result = await paymentService.initiatePayoutTransfer({
+      amount:        payout.amount,
+      accountNumber: payout.accountNumber,
+      bankCode:      payout.bankCode,
+      accountName:   payout.accountName,
+      reason:        `Wallet withdrawal — ${payout.user.firstName} ${payout.user.lastName}`,
+      reference:     payout.reference,
+      currency:      payout.currency,
+      country:       payoutCountry,
+      method:        payout.payoutMethod,
+      msisdn:        payout.payoutDetails?.msisdn ?? null,
+    });
+    transferCode = result.transferCode;
+    provider     = result.provider;
+    providerOk   = true;
+  } catch (err) {
+    transferError = err?.response?.data?.message ?? err.message ?? 'Unknown transfer error';
+    console.error(`[adminApprovePayout] ${provider} transfer error:`, transferError);
+  }
+
+  // When the provider call failed the money has NOT left yet. Marking the
+  // payout COMPLETED regardless would tell the driver they've been paid and
+  // hide the row from the ops queue. Orange markets hit this path routinely
+  // until the B2C cash-out contract goes live, so the failure case has to
+  // stay visible and retryable rather than being swallowed.
+  const settledStatus = providerOk ? 'COMPLETED' : 'PROCESSING';
+
+  await prisma.$transaction([
+    prisma.payout.update({
+      where: { id },
+      data: {
+        status:       settledStatus,
+        ...(providerOk && { processedAt: new Date() }),
+        ...(transferCode  && { transferCode }),
+        ...(transferError && { transferError }),
+      },
+    }),
+    prisma.walletTransaction.updateMany({
+      where: { reference: payout.reference },
+      data:  { status: providerOk ? 'COMPLETED' : 'PENDING' },
+    }),
+  ]);
+
+  // This is the single most important audit entry in this file: approving
+  // a payout triggers a REAL, irreversible external bank transfer.
+  logActivity({
+    userId:     req.user.id, // the admin who approved it, not the payout owner
+    action:     'admin_payout_approved',
+    entityType: 'Payout',
+    entityId:   id,
+    details: {
+      targetUserId:  payout.userId,
+      amount:        payout.amount,
+      provider,
+      providerOk,
+      transferCode,
+      transferError,
+      note,
+    },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  payout.userId,
+    title:   'Withdrawal Approved ✅',
+    message: `Your withdrawal of ${formatMoney(payout.amount, payout.currency)} to ${payout.bankName || payout.accountName} has been approved${
+      providerOk ? ' and is on its way' : ' — the transfer is being processed and will complete shortly'
+    }.${note ? ` Note: ${note}` : ''}`,
+    type:    notificationService.TYPES.WALLET_WITHDRAWAL,
+    data:    { payoutId: id, amount: payout.amount, reference: payout.reference },
+  });
+
+  if (providerOk && payout.user.email) {
+    await safeSendEmail(
+      () => emailService.sendWithdrawalApprovedEmail(payout.user.email, payout.user.firstName, {
+        amount: payout.amount,
+        reference: payout.reference,
+        accountName: payout.accountName,
+        accountNumber: payout.accountNumber,
+        bankName: payout.bankName || payout.bankCode,
+      }),
+      'Withdrawal approved'
+    );
+  }
+
+  res.status(200).json({
+    success:  true,
+    message:  providerOk
+      ? `Payout approved and ${provider} transfer initiated`
+      : `Payout approved but the ${provider} transfer did not go through — left as PROCESSING for manual settlement`,
+    data: {
+      provider,
+      [provider]: providerOk ? 'ok' : 'failed',
+      transferCode,
+      ...(transferError && { transferError }),
+    },
+  });
+};
+
+// Mark a payout as paid after settling it by hand.
+exports.adminCompletePayout = async (req, res) => {
+  const { id } = req.params;
+  const { reference, note } = req.body;
+
+  const payout = await prisma.payout.findUnique({ where: { id }, include: { user: true } });
+  if (!payout) throw new AppError('Payout not found', 404);
+  if (!['PENDING', 'PROCESSING'].includes(payout.status)) {
+    throw new AppError('Only a pending or processing payout can be marked as paid', 400);
+  }
+
+  if (payout.userId === req.user.id) throw new AppError('You cannot mark your own withdrawal as paid.', 403);
+
+  await prisma.$transaction(async (tx) => {
+    const ok = await claim(tx.payout, { id, status: payout.status, updatedAt: payout.updatedAt }, {
+      status:      'COMPLETED',
+      processedAt: new Date(),
+      ...(reference && { transferCode: reference }),
+      transferError: null,
+      payoutDetails: { ...(payout.payoutDetails || {}), settledManually: true, settledBy: req.user.id, ...(note && { settleNote: note }) },
+    });
+    if (!ok) throw new AppError('This payout was changed by someone else. Refresh the list.', 409);
+    await tx.walletTransaction.updateMany({ where: { reference: payout.reference }, data: { status: 'COMPLETED' } });
+  });
+
+  logActivity({
+    userId: req.user.id, action: 'admin_payout_marked_paid', entityType: 'Payout', entityId: id,
+    details: { targetUserId: payout.userId, amount: payout.amount, currency: payout.currency, reference: reference ?? null, note: note ?? null },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  payout.userId,
+    title:   'Withdrawal Paid ✅',
+    message: `Your withdrawal of ${formatMoney(payout.amount, payout.currency)} to ${payout.bankName || payout.accountName} has been sent.`,
+    type:    notificationService.TYPES.WALLET_WITHDRAWAL,
+    data:    { payoutId: id, amount: payout.amount, reference: payout.reference },
+  });
+
+  res.status(200).json({ success: true, message: 'Payout marked as paid' });
+};
+
+exports.adminRejectPayout = async (req, res) => {
+  const { id }     = req.params;
+  const { reason } = req.body;
+
+  const payout = await prisma.payout.findUnique({ where: { id }, include: { user: true } });
+  if (!payout)                      throw new AppError('Payout not found', 404);
+  if (!['PENDING', 'PROCESSING'].includes(payout.status)) throw new AppError('Payout can no longer be rejected', 400);
+  // Once a provider accepted the transfer the money may already have left —
+  // refunding the wallet then would pay the person twice.
+  if (payout.status === 'PROCESSING' && payout.transferCode) {
+    throw new AppError('A transfer was already started for this payout, so it cannot be refunded. Verify it with the provider and mark it as paid.', 409);
+  }
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: payout.userId } });
+
+  if (!wallet) throw new AppError('User wallet not found', 404);
+
+  // Payout.amount is the NET after the withdrawal fee. The wallet was debited the
+  // GROSS, so that's what a rejection must give back.
+  const refundAmount = payout.payoutDetails?.grossAmount ?? payout.amount;
+
+  // Only the request that still matches what was read may refund; "mark as paid" or "approve" running at the same
+  // moment would otherwise leave the person both paid and refunded.
+  await prisma.$transaction(async (tx) => {
+    const ok = await claim(tx.payout, { id, status: payout.status, updatedAt: payout.updatedAt }, { status: 'FAILED', failureReason: reason, processedAt: new Date() });
+    if (!ok) throw new AppError('This payout was changed by someone else. Refresh the list.', 409);
+    await creditWallet(tx, { id: wallet.id }, refundAmount, { currency: wallet.currency, refType: 'PAYOUT_REFUND', refId: id, memo: reason, actor: req.user.id });
+    await tx.walletTransaction.updateMany({ where: { reference: payout.reference }, data: { status: 'FAILED' } });
+    await tx.walletTransaction.create({
+      data: {
+        walletId:    wallet.id,
+        type:        'REFUND',
+        amount:      refundAmount,
+        description: `Withdrawal refund — ${reason ?? 'rejected by admin'}`,
+        status:      'COMPLETED',
+        reference:   `REFUND-${id}`,
+      },
+    });
+  });
+
+  logActivity({
+    userId:     req.user.id,
+    action:     'admin_payout_rejected',
+    entityType: 'Payout',
+    entityId:   id,
+    details:    { targetUserId: payout.userId, amount: refundAmount, reason },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  payout.userId,
+    title:   'Withdrawal Rejected',
+    message: `Your withdrawal of ${formatMoney(refundAmount, payout.currency)} was rejected and refunded to your wallet.${reason ? ` Reason: ${reason}` : ''}`,
+    type:    notificationService.TYPES.WALLET_CREDITED,
+    data:    { payoutId: id, amount: payout.amount, reason },
+  });
+
+  if (payout.user.email) {
+    await safeSendEmail(
+      () => emailService.sendWithdrawalRejectedEmail(payout.user.email, payout.user.firstName, {
+        amount: payout.amount,
+        reference: payout.reference,
+        reason,
+      }),
+      'Withdrawal rejected'
+    );
+  }
+
+  res.status(200).json({ success: true, message: 'Payout rejected and wallet refunded' });
+};
+
+// ─────────────────────────────────────────────
+// ADMIN — Transfer management
+//
+// FIX: adminApproveTransfer and adminRejectTransfer now query the Transfer
+// table by reference instead of regex-parsing the description field.
+// ─────────────────────────────────────────────
+
+exports.adminGetTransfers = async (req, res) => {
+  const { status = 'PENDING', page = 1, limit = 20, country } = req.query;
+  const skip = (page - 1) * limit;
+
+  const where = {};
+  const transferMarket = marketWhere(req.user, country);
+  if (transferMarket) where.sender = transferMarket;
+  if (status !== 'ALL') where.status = status;
+
+  const [transfers, total] = await Promise.all([
+    prisma.transfer.findMany({
+      where,
+      include: {
+        sender:    { select: { id: true, firstName: true, lastName: true, email: true, phone: true, wallet: { select: { currency: true } } } },
+        recipient: { select: { id: true, firstName: true, lastName: true, email: true, phone: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip:    parseInt(skip),
+      take:    parseInt(limit),
+    }),
+    prisma.transfer.count({ where }),
+  ]);
+
+  // Transfer has no currency column; money moves out of the sender's wallet, so
+  // that wallet's currency is the transfer's currency.
+  const transfersWithCurrency = transfers.map(t => ({
+    ...t,
+    currency: t.sender?.wallet?.currency ?? 'NGN',
+    sender:   t.sender ? { ...t.sender, wallet: undefined } : t.sender,
+  }));
+
+  res.status(200).json({
+    success: true,
+    data: { transfers: transfersWithCurrency, pagination: { total, page: parseInt(page), pages: Math.ceil(total / limit) } },
+  });
+};
+
+exports.adminApproveTransfer = async (req, res) => {
+  const { reference } = req.params;
+  const { note }      = req.body;
+
+  const transfer = await prisma.transfer.findUnique({
+    where:   { reference },
+    include: {
+      sender:    { include: { wallet: true } },
+      recipient: true,
+    },
+  });
+  if (!transfer)                    throw new AppError('Transfer not found', 404);
+  if (transfer.status !== 'PENDING') throw new AppError('Transfer already processed', 400);
+
+  const recipientWallet = await ensureWallet(transfer.recipientId);
+
+  // The status change is the gate: only the request that moves PENDING -> COMPLETED may credit the recipient. An
+  // approve and a reject sent together both read PENDING; before, both went through (recipient paid AND sender refunded).
+  await prisma.$transaction(async (tx) => {
+    if (!(await claim(tx.transfer, { reference, status: 'PENDING' }, { status: 'COMPLETED' }))) throw new AppError('Transfer already processed', 409);
+    await tx.walletTransaction.updateMany({ where: { reference, type: 'DEBIT', status: 'PENDING' }, data: { status: 'COMPLETED' } });
+    await creditWallet(tx, { id: recipientWallet.id }, transfer.amount, { currency: recipientWallet.currency, refType: 'TRANSFER_RECEIVED', refId: reference, actor: req.user.id });
+    await tx.walletTransaction.create({
+      data: {
+        walletId:    recipientWallet.id,
+        type:        'CREDIT',
+        amount:      transfer.amount,
+        description: `Transfer received from ${transfer.sender.firstName} ${transfer.sender.lastName}.${note ? ` Note: ${note}` : ''}`,
+        status:      'COMPLETED',
+        reference:   `${reference}-R`,
+      },
+    });
+  });
+
+  // An admin decision that moves money from one user's wallet to another's.
+  // Same risk class as admin.controller.js's wallet_credit / wallet_debit
+  // (already CRITICAL there) — this had no equivalent here.
+  logActivity({
+    userId:     req.user.id,
+    action:     'admin_transfer_approved',
+    entityType: 'Transfer',
+    entityId:   reference,
+    details: {
+      senderId:    transfer.senderId,
+      recipientId: transfer.recipientId,
+      amount:      transfer.amount,
+      note,
+    },
+    req,
+  });
+
+  await Promise.allSettled([
+    notificationService.notify({
+      userId:  transfer.senderId,
+      title:   'Transfer Approved ✅',
+      message: `Your transfer of ${formatMoney(transfer.amount, senderWallet.currency)} to ${transfer.recipient.firstName} ${transfer.recipient.lastName} has been approved.`,
+      type:    notificationService.TYPES.PAYMENT_RECEIVED,
+      data:    { reference, amount: transfer.amount },
+    }),
+    notificationService.notify({
+      userId:  transfer.recipientId,
+      title:   'Money Received 💰',
+      message: `${formatMoney(transfer.amount, senderWallet.currency)} received from ${transfer.sender.firstName} ${transfer.sender.lastName}.`,
+      type:    notificationService.TYPES.PAYMENT_RECEIVED,
+      data:    { reference, amount: transfer.amount },
+    }),
+  ]);
+
+  await Promise.allSettled([
+    transfer.sender.email
+      ? safeSendEmail(
+          () => emailService.sendTransferApprovedEmail(transfer.sender.email, transfer.sender.firstName, {
+            amount: transfer.amount,
+            recipientName: `${transfer.recipient.firstName} ${transfer.recipient.lastName}`,
+            reference,
+            note,
+          }),
+          'Transfer approved (sender)'
+        )
+      : Promise.resolve(),
+    transfer.recipient.email
+      ? safeSendEmail(
+          () => emailService.sendMoneyReceivedEmail(transfer.recipient.email, transfer.recipient.firstName, {
+            amount: transfer.amount,
+            senderName: `${transfer.sender.firstName} ${transfer.sender.lastName}`,
+            reference,
+            note,
+          }),
+          'Money received (recipient)'
+        )
+      : Promise.resolve(),
+  ]);
+
+  res.status(200).json({ success: true, message: 'Transfer approved. Recipient has been credited.' });
+};
+
+exports.adminRejectTransfer = async (req, res) => {
+  const { reference } = req.params;
+  const { reason }    = req.body;
+
+  const transfer = await prisma.transfer.findUnique({
+    where:   { reference },
+    include: {
+      sender:    { include: { wallet: true } },
+      recipient: true,
+    },
+  });
+  if (!transfer)                    throw new AppError('Transfer not found', 404);
+  if (transfer.status !== 'PENDING') throw new AppError('Transfer already processed', 400);
+
+  const senderWallet = transfer.sender.wallet;
+
+  await prisma.$transaction(async (tx) => {
+    if (!(await claim(tx.transfer, { reference, status: 'PENDING' }, { status: 'FAILED' }))) throw new AppError('Transfer already processed', 409);
+    await creditWallet(tx, { id: senderWallet.id }, transfer.amount, { currency: senderWallet.currency, refType: 'TRANSFER_REFUND', refId: reference, actor: req.user.id });
+    await tx.walletTransaction.updateMany({ where: { reference, type: 'DEBIT', status: 'PENDING' }, data: { status: 'FAILED' } });
+    await tx.walletTransaction.create({
+      data: {
+        walletId:    senderWallet.id,
+        type:        'REFUND',
+        amount:      transfer.amount,
+        description: `Transfer refund — ${reason ?? 'rejected by admin'}`,
+        status:      'COMPLETED',
+        reference:   `REFUND-${reference}`,
+      },
+    });
+  });
+
+  logActivity({
+    userId:     req.user.id,
+    action:     'admin_transfer_rejected',
+    entityType: 'Transfer',
+    entityId:   reference,
+    details: {
+      senderId:    transfer.senderId,
+      recipientId: transfer.recipientId,
+      amount:      transfer.amount,
+      reason,
+    },
+    req,
+  });
+
+  await notificationService.notify({
+    userId:  transfer.senderId,
+    title:   'Transfer Rejected',
+    message: `Your transfer of ${formatMoney(transfer.amount, senderWallet.currency)} was rejected. Funds have been returned to your wallet.${reason ? ` Reason: ${reason}` : ''}`,
+    type:    notificationService.TYPES.WALLET_CREDITED,
+    data:    { reference, amount: transfer.amount, reason },
+  });
+
+  if (transfer.sender.email) {
+    await safeSendEmail(
+      () => emailService.sendTransferRejectedEmail(transfer.sender.email, transfer.sender.firstName, {
+        amount: transfer.amount,
+        recipientName: `${transfer.recipient.firstName} ${transfer.recipient.lastName}`,
+        reference,
+        reason,
+      }),
+      'Transfer rejected'
+    );
+  }
+
+  res.status(200).json({ success: true, message: 'Transfer rejected. Sender wallet has been refunded.' });
+};
+
+// ─────────────────────────────────────────────
+// ADMIN — Wallet overview
+// ─────────────────────────────────────────────
+
+exports.adminGetWalletStats = async (req, res) => {
+  const wm = marketWhere(req.user, req.query.country);
+  const wUser = wm ? { user: wm } : {};
+  const [
+    balancesByCurrency, totalUsers,
+    pendingPayouts, pendingTransfers,
+  ] = await Promise.all([
+    // Grouped by currency instead of a single sum — a raw sum across NGN,
+    // GHS, and XOF wallets would be a meaningless number once non-NG
+    // wallets exist.
+    prisma.wallet.groupBy({ by: ['currency'], where: wUser, _sum: { balance: true }, _count: true }),
+    prisma.wallet.count({ where: wUser }),
+    prisma.payout.count({ where: { status: 'PENDING', ...(wm ? { user: wm } : {}) } }),
+    // FIX: count from Transfer table instead of WalletTransaction description heuristic
+    prisma.transfer.count({ where: { status: 'PENDING', ...(wm ? { sender: wm } : {}) } }),
+  ]);
+
+  // WalletTransaction has no currency column, so credits/debits are summed per
+  // wallet currency by filtering on the owning wallet.
+  const todayStart = new Date(new Date().setHours(0, 0, 0, 0));
+  const todayByCurrency = await Promise.all(balancesByCurrency.map(async (b) => {
+    const base = { status: 'COMPLETED', createdAt: { gte: todayStart }, wallet: { currency: b.currency, ...wUser } };
+    const [credits, debits] = await Promise.all([
+      prisma.walletTransaction.aggregate({ where: { ...base, type: 'CREDIT' }, _sum: { amount: true } }),
+      prisma.walletTransaction.aggregate({ where: { ...base, type: 'DEBIT'  }, _sum: { amount: true } }),
+    ]);
+    return { currency: b.currency, todayCredits: credits._sum.amount ?? 0, todayDebits: debits._sum.amount ?? 0 };
+  }));
+
+  const byCurrency = balancesByCurrency
+    .map(b => {
+      const t = todayByCurrency.find(x => x.currency === b.currency);
+      return {
+        currency:     b.currency,
+        totalBalance: b._sum.balance ?? 0,
+        walletCount:  b._count,
+        todayCredits: t?.todayCredits ?? 0,
+        todayDebits:  t?.todayDebits  ?? 0,
+      };
+    })
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      byCurrency,
+      totalWallets: totalUsers,
+      pendingPayouts,
+      pendingTransfers,
+    },
+  });
+};
+
+exports.getDepositLimits = async (req, res) => {
+  const [wallet, country] = await Promise.all([
+    prisma.wallet.findUnique({ where: { userId: req.user.id }, select: { currency: true } }),
+    getCountryForUser(req.user),
+  ]);
+  const limits = await countrySettingsService.getTopUpLimits(country.code);
+  const wd     = await countrySettingsService.getWithdrawalRules(country.code, req.user.role);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      min: limits.min,
+      max: limits.max,
+      withdrawal: { enabled: wd.enabled, min: wd.min, max: wd.max, feeFlat: wd.feeFlat, feePercent: wd.feePct },
+      currency: wallet?.currency ?? country.currencyCode,
+      paymentProviders: country.paymentProviders ?? ['paystack', 'flutterwave'],
+    },
+  });
+};
+
+// ─────────────────────────────────────────────
+// EMAIL TRANSACTION HISTORY
+// ─────────────────────────────────────────────
+
+exports.emailTransactionHistory = async (req, res) => {
+  const { from, to, type, email } = req.body;
+
+  if (!email || !email.includes('@')) throw new AppError('Valid email address is required', 400);
+
+  const fromDate = from ? new Date(from) : (() => { const d = new Date(); d.setDate(d.getDate() - 30); return d; })();
+  const toDate   = to   ? new Date(to)   : new Date();
+  toDate.setHours(23, 59, 59, 999);
+
+  const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
+  if (!wallet) throw new AppError('Wallet not found', 404);
+
+  const where = {
+    walletId:  wallet.id,
+    createdAt: { gte: fromDate, lte: toDate },
+  };
+  if (type && type !== 'ALL') where.type = type.toUpperCase();
+
+  const transactions = await prisma.walletTransaction.findMany({
+    where,
+    orderBy: { createdAt: 'desc' },
+    take: 1000,
+  });
+
+  // All HTML generation now lives in email.service.js — controller just
+  // hands over the data.
+  await emailService.sendTransactionHistoryStatement(email, {
+    transactions,
+    fromDate,
+    toDate,
+    type: type || 'ALL',
+  });
+
+  const fmtDate = (d) => new Date(d).toLocaleDateString('en-NG', { day: 'numeric', month: 'short', year: 'numeric' });
+
+  res.status(200).json({
+    success: true,
+    message: `Transaction history sent to ${email}`,
+    data: { count: transactions.length, from: fmtDate(fromDate), to: fmtDate(toDate) },
+  });
+};
+
+// ─────────────────────────────────────────────
+// ADMIN — Wallet Top-Up Visibility & Reconciliation
+// ─────────────────────────────────────────────
+
+exports.adminGetTopUps = async (req, res) => {
+  const { status = 'PENDING', page = 1, limit = 20, provider, country } = req.query;
+  const skip = (page - 1) * limit;
+
+  // Any CREDIT wallet transaction with a provider set is a top-up — no more
+  // guessing from the reference string, so we catch every provider/reference
+  // format regardless of which flow (initialize/webhook/verify) created it.
+  const TOPUP_PROVIDERS = ['paystack', 'flutterwave', 'orange'];
+  const where = {
+    type:     'CREDIT',
+    provider: { in: TOPUP_PROVIDERS },
+  };
+  const topupMarket = marketWhere(req.user, country);
+  if (topupMarket) where.wallet = { user: topupMarket };
+  if (provider && TOPUP_PROVIDERS.includes(String(provider).toLowerCase())) {
+    where.provider = String(provider).toLowerCase();
+  }
+  if (status !== 'ALL') where.status = status;
+
+  const [topups, total] = await Promise.all([
+    prisma.walletTransaction.findMany({
+      where,
+      include: {
+        wallet: {
+          select: {
+            userId: true,
+            currency: true,
+            user: { select: { id: true, firstName: true, lastName: true, email: true, phone: true, role: true } },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      skip:    parseInt(skip),
+      take:    parseInt(limit),
+    }),
+    prisma.walletTransaction.count({ where }),
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: { topups, pagination: { total, page: parseInt(page), pages: Math.ceil(total / limit) } },
+  });
+};
+
+exports.adminReconcileTopUp = async (req, res) => {
+  const { id } = req.params;
+
+  const tx = await prisma.walletTransaction.findUnique({
+    where:   { id },
+    include: { wallet: { select: { id: true, userId: true } } },
+  });
+  if (!tx) throw new AppError('Top-up record not found', 404);
+  if (tx.status === 'COMPLETED') {
+    return res.status(200).json({ success: true, message: 'Already credited', data: { transaction: tx } });
+  }
+
+  // Orange Money: reuse the same idempotent credit path as the webhook / user
+  // verify. It re-asks Orange for the status, so the admin can't force a credit.
+  if (tx.provider === 'orange') {
+    const result = await creditOrangeTopUp(tx.reference);
+    if (!result.ok) {
+      throw new AppError(result.pending
+        ? 'Orange Money still shows this payment as pending — try again shortly.'
+        : (result.reason || 'Orange Money did not confirm this payment'), result.pending ? 409 : 400);
+    }
+    await logActivity({
+      userId:     req.user.id,
+      action:     'admin_topup_reconciled',
+      entityType: 'WalletTransaction',
+      entityId:   tx.id,
+      details:    { targetUserId: tx.wallet.userId, amount: tx.amount, provider: 'orange', reference: tx.reference },
+      req,
+    });
+    return res.status(200).json({
+      success: true,
+      message: `${formatMoney(tx.amount, result.wallet?.currency)} verified with orange and credited.`,
+      data:    { wallet: result.wallet },
+    });
+  }
+
+  // Always re-verify with the provider before crediting — never trust the
+  // admin's word alone that a payment succeeded.
+  const provider = tx.provider;
+  let verified;
+  try {
+    if (provider === 'paystack') {
+      verified = await paymentService.paystackVerify(tx.reference);
+      if (verified.status !== 'success') throw new AppError('Paystack has not confirmed this payment as successful', 400);
+    } else if (provider === 'flutterwave') {
+      verified = await paymentService.flutterwaveVerifyByReference(tx.reference);
+      if (verified.status !== 'successful') throw new AppError('Flutterwave has not confirmed this payment as successful', 400);
+    } else {
+      throw new AppError('Could not determine payment provider from reference', 400);
+    }
+  } catch (err) {
+    // If the provider says the payment definitively did not go through, show the
+    // user FAILED in their history instead of leaving it PENDING forever.
+    // (A merely "pending"/"ongoing" provider status is left untouched.)
+    if (/Status:\s*(failed|abandoned|reversed|cancelled)/i.test(err?.message || '')) {
+      await prisma.walletTransaction.update({ where: { id: tx.id }, data: { status: 'FAILED' } });
+    }
+    throw err;
+  }
+
+  const _c6 = await withClaim(prisma, tx.id, [
+    prisma.wallet.update({ where: { id: tx.wallet.id }, data: { balance: { increment: tx.amount } } }),
+    prisma.walletTransaction.update({ where: { id: tx.id }, data: { status: 'COMPLETED' } }),
+  ]);
+  if (!_c6) throw new AppError('This top-up was already processed.', 409);
+  const [updatedWallet, updatedTx] = _c6;
+
+  await notificationService.notify({
+    userId:  tx.wallet.userId,
+    title:   'Wallet Topped Up 💰',
+    message: `${formatMoney(tx.amount, updatedWallet.currency)} has been added to your wallet. New balance: ${formatMoney(updatedWallet.balance, updatedWallet.currency)}`,
+    type:    notificationService.TYPES.PAYMENT_RECEIVED,
+    data:    { amount: tx.amount, newBalance: updatedWallet.balance, reference: tx.reference },
+  });
+
+  await logActivity({
+    userId:     req.user.id,
+    action:     'admin_topup_reconciled',
+    entityType: 'WalletTransaction',
+    entityId:   tx.id,
+    details:    { targetUserId: tx.wallet.userId, amount: tx.amount, provider, reference: tx.reference },
+    req,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `${formatMoney(tx.amount, updatedWallet.currency)} verified with ${provider} and credited.`,
+    data:    { wallet: updatedWallet, transaction: updatedTx },
+  });
+};
+
+/**
+ * Admin rejects a PENDING top-up: the user's history then shows "Rejected"
+ * (with the reason). No balance changes — a pending top-up was never credited.
+ *
+ * Safety rails:
+ *  - only PENDING rows can be rejected (never undo a credited top-up);
+ *  - the provider is re-asked first, so an admin can't reject a payment that
+ *    actually succeeded (that would leave the customer charged but uncredited
+ *    — use "Verify & Credit" for those);
+ *  - the status flip is atomic (updateMany guarded on status = PENDING).
+ */
+exports.adminRejectTopUp = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+
+  const { id } = req.params;
+  const reason = String(req.body?.reason ?? '').trim();
+
+  const market = marketWhere(req.user);
+  const tx = await prisma.walletTransaction.findFirst({
+    where: {
+      id,
+      type:     'CREDIT',
+      provider: { in: ['paystack', 'flutterwave', 'orange'] },
+      ...(market ? { wallet: { user: market } } : {}),
+    },
+    include: { wallet: { select: { id: true, userId: true, currency: true, user: { select: { id: true, countryCode: true } } } } },
+  });
+  if (!tx) throw new AppError('Top-up record not found', 404);
+  if (tx.status !== 'PENDING') {
+    throw new AppError(`Only pending top-ups can be rejected (this one is ${tx.status}).`, 409);
+  }
+
+  // Ask the provider whether the money actually arrived.
+  let providerSaysPaid = false;
+  try {
+    if (tx.provider === 'paystack') {
+      await paymentService.paystackVerify(tx.reference);          // throws unless successful
+      providerSaysPaid = true;
+    } else if (tx.provider === 'flutterwave') {
+      await paymentService.flutterwaveVerifyByReference(tx.reference); // throws unless successful
+      providerSaysPaid = true;
+    } else if (tx.provider === 'orange') {
+      const country = await getCountryForUser(tx.wallet.user);
+      const status = await orangeService.getTransactionStatus({
+        orderId:     tx.reference,
+        amount:      tx.amount,
+        payToken:    tx.providerRef,
+        countryCode: country.code,
+        config:      country.providerConfig?.orange ?? {},
+      });
+      providerSaysPaid = !!status.isSuccess;
+    }
+  } catch (err) {
+    // 4xx / "not successful" = the provider has no successful payment → fine to reject.
+    // 5xx / network = we can't be sure → refuse rather than risk rejecting a paid top-up.
+    if (!err?.statusCode || err.statusCode >= 500) {
+      throw new AppError(`Could not double-check this payment with ${tx.provider} right now. Please try again shortly.`, 502);
+    }
+  }
+  if (providerSaysPaid) {
+    throw new AppError(`${tx.provider} confirms this payment succeeded. Use "Verify & Credit" instead of rejecting it.`, 409);
+  }
+
+  const baseDescription = String(tx.description || 'Wallet top-up').split(' — rejected:')[0];
+  const { count } = await prisma.walletTransaction.updateMany({
+    where: { id: tx.id, status: 'PENDING' },
+    data:  { status: 'REJECTED', description: `${baseDescription} — rejected: ${reason}`.slice(0, 500) },
+  });
+  if (count === 0) throw new AppError('This top-up was just updated by someone else. Refresh and try again.', 409);
+
+  await notificationService.notify({
+    userId:  tx.wallet.userId,
+    title:   'Top-up Rejected',
+    message: `Your top-up of ${formatMoney(tx.amount, tx.wallet.currency)} was rejected. Reason: ${reason}`,
+    type:    notificationService.TYPES.WALLET_TOPUP_REJECTED,
+    data:    { amount: tx.amount, reference: tx.reference, reason },
+  });
+
+  await logActivity({
+    userId:     req.user.id,
+    action:     'admin_topup_rejected',
+    entityType: 'WalletTransaction',
+    entityId:   tx.id,
+    details:    { targetUserId: tx.wallet.userId, amount: tx.amount, provider: tx.provider, reference: tx.reference, reason },
+    req,
+  });
+
+  res.status(200).json({
+    success: true,
+    message: `Top-up of ${formatMoney(tx.amount, tx.wallet.currency)} rejected.`,
+    data:    { transaction: { ...tx, wallet: undefined, status: 'REJECTED' } },
+  });
+};
+
+module.exports = exports;

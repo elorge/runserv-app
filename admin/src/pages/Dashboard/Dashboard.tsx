@@ -1,0 +1,444 @@
+// admin-web/src/pages/Dashboard/Dashboard.tsx
+import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Users, Car, Package, DollarSign, TrendingUp, Activity, Clock, UserX } from 'lucide-react';
+import { Card, Spinner } from '@/components/common';
+import { LineChart, BarChart } from '@/components/charts';
+import { analyticsAPI } from '@/services/api/analytics';
+import { DashboardStats, RevenueAnalytics } from '@/types';
+import { formatCurrency, formatDate } from '@/utils/helpers';
+import { CountrySelect, CountryTag } from '@/components/CountryFilter';
+import toast from 'react-hot-toast';
+
+// ─── Feature flags ──────────────────────────────────────────────────────────
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Formats a numeric delta as "+12.5%" / "-3.2%" / null → undefined (no badge shown).
+ * Returns both the formatted string and a CSS colour class.
+ */
+function formatDelta(delta: number | null | undefined): { label: string; positive: boolean } | null {
+  if (delta === null || delta === undefined) return null;
+  const positive = delta >= 0;
+  return {
+    label:    `${positive ? '+' : ''}${delta}% vs yesterday`,
+    positive,
+  };
+}
+
+const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
+  const [stats,        setStats]        = useState<DashboardStats | null>(null);
+  const [revenue,      setRevenue]      = useState<RevenueAnalytics | null>(null);
+  const [loading,      setLoading]      = useState(true);
+  // '' = all countries. Money is then shown per currency, never added together.
+  const [country,      setCountry]      = useState('');
+
+  useEffect(() => { loadData(); }, [country]);
+
+  const loadData = async () => {
+    try {
+      const [statsRes, revenueRes] = await Promise.all([
+        analyticsAPI.getDashboardStats(country || undefined),
+        analyticsAPI.getRevenueAnalytics('week', country || undefined),
+      ]);
+      setStats(statsRes.data);
+      setRevenue(revenueRes.data);
+    } catch {
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading || !stats) return (
+    <div className="flex flex-col items-center justify-center min-h-[500px] gap-3">
+      <Spinner size="xl" />
+      <p className="text-sm text-gray-500 animate-pulse">Loading dashboard…</p>
+    </div>
+  );
+
+  // ── Real sub-labels derived from live data ──────────────────────────────────
+  const revenueDelta = formatDelta(stats.revenue?.revenueDelta ?? stats.deltas?.revenue);
+  const userDelta    = formatDelta(stats.deltas?.users);
+
+  // One figure when a single currency applies; one line per currency across several countries.
+  const moneyNode = (key: 'today' | 'week' | 'month' | 'year'): React.ReactNode => {
+    const rows = stats.revenue.byCurrency ?? [];
+    if (rows.length <= 1) return formatCurrency(stats.revenue[key], stats.revenue.currency);
+    return (
+      <span className="block space-y-0.5 text-lg leading-snug">
+        {rows.map(r => <span key={r.currency} className="block">{formatCurrency(r[key], r.currency)}</span>)}
+      </span>
+    );
+  };
+
+const statCards = [
+    {
+      title:    'Total Customers',
+      value:    stats.users.total.toLocaleString(),
+      icon:     Users,
+      color:    'bg-primary-500',
+      subLabel: stats.users.newToday !== undefined
+        ? userDelta
+          ? { label: userDelta.label, positive: userDelta.positive }
+          : { label: `+${stats.users.newToday} today`, positive: true }
+        : null,
+      onClick:  () => navigate('/users'),
+    },
+    {
+      title:    'Total Drivers',
+      value:    stats.users.drivers.toLocaleString(),
+      icon:     Car,
+      color:    'bg-blue-500',
+      subLabel: stats.suspended?.driversCount
+        ? { label: `${stats.suspended.driversCount} suspended`, positive: false }
+        : null,
+      onClick:  () => navigate('/drivers'),
+    },
+    {
+      title:    'Total Delivery Partners',
+      value:    stats.users.partners.toLocaleString(),
+      icon:     Package,
+      color:    'bg-indigo-500',
+      subLabel: stats.suspended?.partnersCount
+        ? { label: `${stats.suspended.partnersCount} suspended`, positive: false }
+        : null,
+      onClick:  () => navigate('/partners'),
+    },
+    {
+      title:    'Pending Driver Approvals',
+      value:    stats.pending.drivers.toLocaleString(),
+      icon:     Clock,
+      color:    stats.pending.drivers > 0 ? 'bg-amber-500' : 'bg-success-500',
+      subLabel: stats.pending.drivers === 0
+        ? { label: 'All approvals up to date', positive: true }
+        : { label: 'Awaiting review', positive: false },
+      onClick:  () => navigate('/drivers?status=pending'),
+    },
+    {
+      title:    'Pending Partner Approvals',
+      value:    stats.pending.partners.toLocaleString(),
+      icon:     Clock,
+      color:    stats.pending.partners > 0 ? 'bg-amber-500' : 'bg-success-500',
+      subLabel: stats.pending.partners === 0
+        ? { label: 'All approvals up to date', positive: true }
+        : { label: 'Awaiting review', positive: false },
+      onClick:  () => navigate('/partners?status=pending'),
+    },
+    {
+      title:    'Incomplete Applications',
+      value:    ((stats.incomplete?.drivers ?? 0) + (stats.incomplete?.partners ?? 0)).toLocaleString(),
+      icon:     UserX,
+      color:    ((stats.incomplete?.drivers ?? 0) + (stats.incomplete?.partners ?? 0)) > 0
+        ? 'bg-gray-400'
+        : 'bg-success-500',
+      subLabel: ((stats.incomplete?.drivers ?? 0) + (stats.incomplete?.partners ?? 0)) > 0
+        ? { label: `${stats.incomplete?.drivers ?? 0} drivers, ${stats.incomplete?.partners ?? 0} partners`, positive: false }
+        : { label: 'No abandoned signups', positive: true },
+      onClick:  () => navigate('/applications/incomplete'),
+    },
+    {
+      title:    'Active Rides',
+      value:    stats.rides.active.toLocaleString(),
+      icon:     Car,
+      color:    'bg-success-500',
+      subLabel: stats.rides.total > 0
+        ? { label: `${stats.rides.total.toLocaleString()} completed total`, positive: true }
+        : null,
+      onClick:  () => navigate('/rides/live'),
+    },
+    {
+      title:    'Active Deliveries',
+      value:    stats.deliveries.active.toLocaleString(),
+      icon:     Package,
+      color:    'bg-warning-500',
+      subLabel: stats.deliveries.total > 0
+        ? { label: `${stats.deliveries.total.toLocaleString()} delivered total`, positive: true }
+        : null,
+      onClick:  () => navigate('/deliveries'),
+    },
+    {
+      title:    "Today's Revenue",
+      value:    moneyNode('today'),
+      icon:     DollarSign,
+      color:    'bg-error-500',
+      subLabel: revenueDelta,
+      onClick:  undefined as (() => void) | undefined,
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+          <p className="text-gray-600 mt-1">Welcome back! Here's what's happening today.</p>
+        </div>
+        <CountrySelect value={country} onChange={setCountry} />
+      </div>
+
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {statCards.map((stat) => (
+          <Card
+            key={stat.title}
+            className={`hover:shadow-lg transition-shadow ${stat.onClick ? 'cursor-pointer' : ''}`}
+            onClick={stat.onClick}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-gray-600">{stat.title}</p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{stat.value}</p>
+                {stat.subLabel && (
+                  <p className={`text-sm mt-1 ${
+                    stat.subLabel.positive ? 'text-success-600' : 'text-gray-400'
+                  }`}>
+                    {stat.subLabel.label}
+                  </p>
+                )}
+              </div>
+              <div className={`${stat.color} w-12 h-12 rounded-lg flex items-center justify-center`}>
+                <stat.icon className="h-6 w-6 text-white" />
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      {/* Revenue by country: several countries can share one currency (XOF), so split them back out. */}
+      {(stats.revenue.byCountry?.length ?? 0) > 0 && (
+        <Card>
+          <h3 className="text-lg font-semibold mb-1">Revenue by country</h3>
+          <p className="text-xs text-gray-500 mb-3">Revenue and wallet balances for each country, in its own currency. Amounts in different currencies are never added together.</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase text-gray-500 border-b">
+                  <th className="py-2 pr-4">Country</th>
+                  <th className="py-2 pr-4 text-right">Today</th>
+                  <th className="py-2 pr-4 text-right">This month</th>
+                  <th className="py-2 pr-4 text-right">This year</th>
+                  <th className="py-2 text-right">Wallet balances</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.revenue.byCountry!.map(r => (
+                  <tr key={`${r.country}-${r.currency}`} className="border-b last:border-0">
+                    <td className="py-2 pr-4"><CountryTag code={r.country} className="mr-2" />{r.name}</td>
+                    <td className="py-2 pr-4 text-right whitespace-nowrap">{formatCurrency(r.today, r.currency)}</td>
+                    <td className="py-2 pr-4 text-right whitespace-nowrap">{formatCurrency(r.month, r.currency)}</td>
+                    <td className="py-2 pr-4 text-right whitespace-nowrap font-medium">{formatCurrency(r.year, r.currency)}</td>
+                    <td className="py-2 text-right whitespace-nowrap">{formatCurrency(r.walletBalance, r.currency)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* Charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card>
+          <h3 className="text-lg font-semibold mb-1">Revenue Trend (Last 7 Days)</h3>
+          {revenue && (
+            <p className="text-xs text-gray-500 mb-3">
+              {revenue.countryName ?? revenue.country} · {revenue.currency}
+              {!country && ' — choose a country above to see another market'}
+            </p>
+          )}
+          {revenue && revenue.dailyRevenue.length > 0 ? (
+            <LineChart
+              data={revenue.dailyRevenue}
+              xKey="date"
+              lines={[
+                { key: 'total',      name: 'Total Revenue', color: '#007AFF' },
+                { key: 'rides',      name: 'Rides',         color: '#34C759' },
+                { key: 'deliveries', name: 'Deliveries',    color: '#FF9500' },
+              ]}
+              currency={revenue.currency}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-48 text-sm text-gray-400">
+              No revenue data for the last 7 days
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <h3 className="text-lg font-semibold mb-4">Service Comparison</h3>
+          {revenue && revenue.dailyRevenue.length > 0 ? (
+            <BarChart
+              data={revenue.dailyRevenue.slice(-7)}
+              xKey="date"
+              bars={[
+                { key: 'rides',      name: 'Rides',      color: '#34C759' },
+                { key: 'deliveries', name: 'Deliveries', color: '#FF9500' },
+              ]}
+              currency={revenue.currency}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-48 text-sm text-gray-400">
+              No service data yet
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Quick Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">
+        <Card>
+          <div className="flex items-center">
+            <TrendingUp className="h-8 w-8 text-success-500" />
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Total Rides</p>
+              <p className="text-xl font-bold">{stats.rides.total.toLocaleString()}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center">
+            <Package className="h-8 w-8 text-warning-500" />
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Total Deliveries</p>
+              <p className="text-xl font-bold">{stats.deliveries.total.toLocaleString()}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center">
+            <Activity className="h-8 w-8 text-primary-500" />
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Week Revenue</p>
+              <p className="text-xl font-bold">{moneyNode('week')}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center">
+            <Activity className="h-8 w-8 text-indigo-500" />
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Month Revenue</p>
+              <p className="text-xl font-bold">{moneyNode('month')}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div className="flex items-center">
+            <DollarSign className="h-8 w-8 text-emerald-500" />
+            <div className="ml-4">
+              <p className="text-sm text-gray-600">Year Revenue</p>
+              <p className="text-xl font-bold">{moneyNode('year')}</p>
+            </div>
+          </div>
+        </Card>
+
+      </div>
+{/* Suspended Users */}
+      {((stats.suspended?.driversList?.length ?? 0) > 0 ||
+        (stats.suspended?.partnersList?.length ?? 0) > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          {/* Suspended Drivers */}
+          <Card>
+            <div className="flex items-center gap-2 mb-4">
+              <UserX className="h-5 w-5 text-error-500" />
+              <h3 className="text-lg font-semibold">
+                Suspended Drivers
+                {(stats.suspended?.driversCount ?? 0) > 0 && (
+                  <span className="ml-2 text-sm font-normal text-error-500">
+                    ({stats.suspended.driversCount})
+                  </span>
+                )}
+              </h3>
+            </div>
+            {(stats.suspended?.driversList?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-400">No suspended drivers.</p>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {stats.suspended.driversList.map(d => (
+                  <div
+                    key={d.id}
+                    className="py-3 flex items-start justify-between gap-3 cursor-pointer hover:bg-gray-50 px-1 rounded"
+                    onClick={() => navigate(`/drivers/${d.id}`)}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {d.firstName} {d.lastName}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">{d.email}</p>
+                      {d.suspensionReason && (
+                        <p className="text-xs text-error-500 mt-0.5 truncate">
+                          {d.suspensionReason}
+                        </p>
+                      )}
+                    </div>
+                    {d.suspendedAt && (
+                      <span className="text-xs text-gray-400 flex-shrink-0">
+                        {formatDate(d.suspendedAt)}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Suspended Delivery Partners */}
+          <Card>
+            <div className="flex items-center gap-2 mb-4">
+              <UserX className="h-5 w-5 text-error-500" />
+              <h3 className="text-lg font-semibold">
+                Suspended Delivery Partners
+                {(stats.suspended?.partnersCount ?? 0) > 0 && (
+                  <span className="ml-2 text-sm font-normal text-error-500">
+                    ({stats.suspended.partnersCount})
+                  </span>
+                )}
+              </h3>
+            </div>
+            {(stats.suspended?.partnersList?.length ?? 0) === 0 ? (
+              <p className="text-sm text-gray-400">No suspended partners.</p>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {stats.suspended.partnersList.map(p => (
+                  <div
+                    key={p.id}
+                    className="py-3 flex items-start justify-between gap-3 cursor-pointer hover:bg-gray-50 px-1 rounded"
+                    onClick={() => navigate(`/partners/${p.id}`)}
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {p.firstName} {p.lastName}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate">{p.email}</p>
+                      {p.suspensionReason && (
+                        <p className="text-xs text-error-500 mt-0.5 truncate">
+                          {p.suspensionReason}
+                        </p>
+                      )}
+                    </div>
+                    {p.suspendedAt && (
+                      <span className="text-xs text-gray-400 flex-shrink-0">
+                        {formatDate(p.suspendedAt)}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default Dashboard;

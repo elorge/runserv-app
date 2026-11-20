@@ -1,0 +1,21 @@
+{
+  "name": "Runserv — Company Dashboard",
+  "short_name": "Runserv",
+  "description": "Review your staff's rides and deliveries, audit trips and see your monthly Runserv bill.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1623",
+  "theme_color": "#0f1623",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Staff requests", "url": "/company/staff?tab=requests" },
+    { "name": "Trips & audit",  "url": "/company/trips" },
+    { "name": "Billing",        "url": "/company/billing" }
+  ]
+}
