@@ -76,6 +76,18 @@ router.put(
   deliveryController.completeDelivery
 );
 
+// M15 proof of delivery: the recipient's code (guest parcels), optional photo, and the failed-delivery / return flow.
+router.post('/:id/proof',
+  authorize('DELIVERY_PARTNER'), param('id').isUUID(),
+  [body('code').isString().matches(/^\d{6}$/), body('photoUrl').optional({ nullable: true }).isString().isLength({ max: 2048 })],
+  deliveryController.verifyProof);
+router.post('/:id/failed',
+  authorize('DELIVERY_PARTNER'), param('id').isUUID(),
+  [body('reason').isIn(['RECIPIENT_UNAVAILABLE', 'WRONG_ADDRESS', 'RECIPIENT_REFUSED', 'PARCEL_DAMAGED', 'OTHER']), body('note').optional({ nullable: true }).isString().isLength({ max: 300 }), body('photoUrl').optional({ nullable: true }).isString().isLength({ max: 2048 })],
+  deliveryController.failDelivery);
+router.post('/:id/returned',
+  authorize('DELIVERY_PARTNER'), param('id').isUUID(), deliveryController.confirmReturned);
+
 router.put('/:id/cancel',
   param('id').isUUID(),
   [body('reason').optional().isString()],

@@ -1266,6 +1266,7 @@ exports.getPayments = async (req, res) => {
   if (search) {
     where.OR = [
       { transactionId: { contains: search, mode: 'insensitive' } },
+      { providerRef:   { contains: search, mode: 'insensitive' } },
       { user: { firstName: { contains: search, mode: 'insensitive' } } },
       { user: { lastName:  { contains: search, mode: 'insensitive' } } },
       { user: { email:     { contains: search, mode: 'insensitive' } } },

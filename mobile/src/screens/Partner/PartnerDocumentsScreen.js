@@ -43,7 +43,7 @@ const VEHICLE_SUB_TYPES = {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Document slots per vehicle type
 // ─────────────────────────────────────────────────────────────────────────────
-const getDocSlots = (vehicleType) => {
+export const getDocSlots = (vehicleType) => {
   // Universal for all partners
   const base = [
     {

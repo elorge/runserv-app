@@ -5,6 +5,8 @@ import { Alert } from 'react-native';
 import { authAPI } from '../services/api';
 import { onForceLogout, suppressForceLogout } from '../services/authEvents';
 import socketService from '../services/socket';
+import { loadGuestSession, saveGuestSession, clearAllGuestState, clearCredential } from '../services/guestSession';
+import { validateGuestSession, isRegisteredPayload } from '../utils/guestAuth';
 
 const AuthContext = createContext();
 
@@ -29,10 +31,13 @@ export const AuthProvider = ({ children }) => {
   const [token,           setToken]           = useState(null);
   const [loading,         setLoading]         = useState(true);
   const [biometricLocked, setBiometricLocked] = useState(false);
+  // M16: a GUEST (phone-verified) session lives apart from the registered user/token above. It is never written to authToken/user.
+  const [guestSession,    setGuestSession]    = useState(null);
 
   const logoutRef = useRef(null);
 
   useEffect(() => { loadStoredAuth(); }, []);
+  useEffect(() => { loadGuestSession().then(setGuestSession).catch(() => {}); }, []);
 
   useEffect(() => {
     const unsubscribe = onForceLogout((reason) => {
@@ -250,6 +255,40 @@ export const AuthProvider = ({ children }) => {
   logoutRef.current = logout;
 
   // ─────────────────────────────────────────────────────────────────────────
+  // M16 guest session. Separate from the registered session on purpose.
+  //   adoptSession(verifyResult) -> { success, message? }   (verifyResult = data of POST /guest/otp/verify)
+  //   endGuestSession()          -> forget the guest credential on this device (expiry, "use a different number")
+  //   completeConversion(data)   -> data of POST /guest/convert: start the REGISTERED session, then clear guest credentials
+  // ─────────────────────────────────────────────────────────────────────────
+  const adoptSession = async (gs) => {
+    const v = validateGuestSession(gs);
+    if (!v.ok) return { success: false, message: v.message };
+    try {
+      const saved = await saveGuestSession(v.session);
+      setGuestSession(saved);
+      return { success: true };
+    } catch {
+      // Fail closed: the credential was not stored, so the guest is NOT treated as verified and keeps their place in the flow.
+      setGuestSession(null);
+      return { success: false, message: 'We could not save your verification securely on this device. Nothing was lost: please try again.' };
+    }
+  };
+
+  // M16.1: ending a guest session drops the CREDENTIAL only; the booking reference survives so the guest can re-verify and resume.
+  const endGuestSession = async () => {
+    setGuestSession(null);
+    try { await clearCredential(); } catch { /* nothing left to clear */ }
+  };
+
+  const completeConversion = async (payload) => {
+    if (!isRegisteredPayload(payload)) return { success: false, message: 'Your account was created but we could not sign you in. Please sign in with your email and password.' };
+    await _persistSession(payload.user, payload.token);
+    setGuestSession(null);
+    try { await clearAllGuestState(); } catch { /* the account exists; leftovers are harmless */ }   // server-confirmed conversion: booking context goes too
+    return { success: true };
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
   // _persistSession — write storage + update all React state in one shot
   // ─────────────────────────────────────────────────────────────────────────
   const _persistSession = async (u, t) => {
@@ -264,6 +303,7 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider value={{
       user, token, loading,
+      guestSession, adoptSession, endGuestSession, completeConversion,
       biometricLocked,
       login, loginWithGoogle, register, logout, updateUser,
       biometricLogin,

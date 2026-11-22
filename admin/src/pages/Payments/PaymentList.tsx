@@ -12,9 +12,9 @@ import CurrencyTabs from '@/components/common/CurrencyTabs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type PaymentStatus = 'ALL' | 'COMPLETED' | 'PENDING' | 'FAILED' | 'REFUNDED';
+type PaymentStatus = 'ALL' | 'COMPLETED' | 'PENDING' | 'FAILED' | 'REFUNDED' | 'REVIEW_REQUIRED' | 'CANCELLED' | 'EXPIRED';
 type PaymentMethod = 'ALL' | 'CASH' | 'CARD' | 'WALLET' | 'MOBILE_MONEY';
-type ProviderFilter = 'ALL' | 'paystack' | 'flutterwave' | 'orange';
+type ProviderFilter = 'ALL' | 'paystack' | 'flutterwave' | 'orange' | 'mtn_momo';
 type ServiceFilter = 'ALL' | 'RIDE' | 'DELIVERY';
 
 interface PaymentUser {
@@ -35,6 +35,7 @@ interface Payment {
   provider?: string | null;
   status: string;
   transactionId?: string;
+  providerRef?: string | null;
   rideId?: string;
   deliveryId?: string;
   // commission fields (populated when CommissionLedger exists)
@@ -66,12 +67,13 @@ interface Pagination { total: number; page: number; pages: number; }
 const fmt = (n: number, currency?: string | null) => formatMoney(n, currency);
 
 const PROVIDER_LABEL: Record<string, string> = {
-  paystack: 'Paystack', flutterwave: 'Flutterwave', orange: 'Orange Money', none: 'No gateway',
+  paystack: 'Paystack', flutterwave: 'Flutterwave', orange: 'Orange Money', mtn_momo: 'MTN MoMo', none: 'No gateway',
 };
 const PROVIDER_STYLE: Record<string, string> = {
   paystack:    'bg-sky-50 text-sky-700 border-sky-100',
   flutterwave: 'bg-amber-50 text-amber-700 border-amber-100',
   orange:      'bg-orange-50 text-orange-700 border-orange-100',
+  mtn_momo:    'bg-yellow-50 text-yellow-800 border-yellow-200',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -79,6 +81,11 @@ const STATUS_STYLE: Record<string, string> = {
   PENDING:   'bg-yellow-100 text-yellow-800 border-yellow-200',
   FAILED:    'bg-red-100 text-red-800 border-red-200',
   REFUNDED:  'bg-purple-100 text-purple-800 border-purple-200',
+  REVIEW_REQUIRED:    'bg-orange-100 text-orange-800 border-orange-300',
+  CANCELLED:          'bg-gray-100 text-gray-700 border-gray-200',
+  EXPIRED:            'bg-gray-100 text-gray-700 border-gray-200',
+  REFUND_PENDING:     'bg-purple-50 text-purple-700 border-purple-200',
+  PARTIALLY_REFUNDED: 'bg-purple-100 text-purple-800 border-purple-200',
 };
 
 const METHOD_ICON: Record<string, React.ReactNode> = {
@@ -187,9 +194,9 @@ const PaymentList: React.FC = () => {
     stats?.byCurrency.find(c => c.currency === currency) ?? stats?.byCurrency[0];
   const activeCurrency = cs?.currency ?? BASE_CURRENCY;
 
-  const STATUS_FILTERS: PaymentStatus[] = ['ALL', 'COMPLETED', 'PENDING', 'FAILED', 'REFUNDED'];
+  const STATUS_FILTERS: PaymentStatus[] = ['ALL', 'COMPLETED', 'PENDING', 'FAILED', 'REFUNDED', 'REVIEW_REQUIRED', 'CANCELLED', 'EXPIRED'];
   const METHOD_FILTERS: PaymentMethod[] = ['ALL', 'CASH', 'CARD', 'WALLET', 'MOBILE_MONEY'];
-  const PROVIDER_FILTERS: ProviderFilter[] = ['ALL', 'paystack', 'flutterwave', 'orange'];
+  const PROVIDER_FILTERS: ProviderFilter[] = ['ALL', 'paystack', 'flutterwave', 'orange', 'mtn_momo'];
   const SERVICE_FILTERS: ServiceFilter[] = ['ALL', 'RIDE', 'DELIVERY'];
 
   return (
@@ -257,7 +264,7 @@ const PaymentList: React.FC = () => {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search by name, email, or transaction ID…"
+              placeholder="Search by name, email, transaction or provider reference…"
               className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -272,7 +279,7 @@ const PaymentList: React.FC = () => {
                 <button key={s} onClick={() => setStatus(s)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                     status === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}>{s}</button>
+                  }`}>{s.replace(/_/g, ' ')}</button>
               ))}
             </div>
 
@@ -305,7 +312,7 @@ const PaymentList: React.FC = () => {
                 <button key={s} onClick={() => setService(s)}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ${
                     service === s ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}>{s}</button>
+                  }`}>{s.replace(/_/g, ' ')}</button>
               ))}
             </div>
 

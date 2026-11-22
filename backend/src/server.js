@@ -79,6 +79,9 @@ function runOrgBilling(trigger) {
 // Catch up shortly after boot in case the 01:00 slot was missed (e.g. the host was asleep).
 if (orgBilling) setTimeout(() => runOrgBilling('startup'), 2 * 60 * 1000);
 
+// Payment sweeper: re-checks pending provider (MTN MoMo) payments every few minutes. Disable with PAYMENT_SWEEPER_ENABLED=false.
+if (require('./services/payments/sweeper.job').start(logger)) logger.info('[Cron] Payment sweeper scheduled');
+
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 const shutdown = (signal) => {
   logger.info(`${signal} received — closing HTTP server`);
@@ -108,6 +111,8 @@ process.on('uncaughtException', (err) => {
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 server.listen(PORT, HOST, () => {
+  require('./services/smsOutbox.service').startWorker(); // M16: guest SMS (tracking link, recipient code) with retry / dead-letter
+  require('./services/emailOutbox.service').startWorker(); // M16.1: guest email OTP (Brevo -> Resend quota routing) with retry / dead-letter
   require('./services/outbox.service').startWorker(); // M13: trip-completed events -> fleet records, with retry / dead-letter
   const { networkInterfaces } = require('os');
   const nets = networkInterfaces();

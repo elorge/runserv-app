@@ -94,7 +94,7 @@ exports.lookupUser = async (req, res) => {
   if (candidates.includes(req.user.phone)) throw new AppError('Cannot look up yourself', 400);
 
   const user = await prisma.user.findFirst({
-    where:  { phone: { in: candidates } },
+    where:  { phone: { in: candidates }, NOT: { authProvider: 'GUEST' } },   // M15: a guest identity is not a wallet holder
     select: { id: true, firstName: true, lastName: true, phone: true, isActive: true },
   });
 
@@ -774,7 +774,7 @@ exports.transfer = async (req, res) => {
   if (recipientPhone === req.user.phone) throw new AppError('Cannot transfer to yourself', 400);
 
   const recipient = await prisma.user.findUnique({ where: { phone: recipientPhone } });
-  if (!recipient)          throw new AppError('Recipient not found', 404);
+  if (!recipient || recipient.authProvider === 'GUEST') throw new AppError('Recipient not found', 404);
   if (!recipient.isActive) throw new AppError('Recipient account is not active', 400);
 
     const senderWallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });

@@ -949,8 +949,11 @@ exports.getPlatformRates = async (req, res) => {
   // Optional auth on this route: signed-in users see their own country's rate
   // card, anonymous callers get the base market's.
   const ctx = req.user ? await getPricingContextForUserId(req.user.id) : { countryCode: 'NG', currencyCode: 'NGN' };
-  const { rates, delivery, roundingStep } = await getSettings(ctx.countryCode);
-  res.status(200).json({ success: true, data: { rates, delivery, roundingStep, currency: ctx.currencyCode, countryCode: ctx.countryCode } });
+  const { rates, delivery, platform, roundingStep } = await getSettings(ctx.countryCode);
+  // `commission` is the market's STANDARD platform commission (a share, 0..1) so signed-out drivers and couriers can see
+  // what they would keep. It is a public rate-card value, like the fares: no per-company or per-user terms are exposed.
+  const commission = { rides: platform.ridesCommission, delivery: platform.deliveryCommission };
+  res.status(200).json({ success: true, data: { rates, delivery, commission, roundingStep, currency: ctx.currencyCode, countryCode: ctx.countryCode } });
 };
 
 module.exports = exports;

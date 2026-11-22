@@ -23,10 +23,17 @@ import RideList           from '@/pages/Rides/RideList';
 import RideDetails        from '@/pages/Rides/RideDetails';
 import LiveRides          from '@/pages/Rides/LiveRides';
 import DeliveryList       from '@/pages/Deliveries/DeliveryList';
+import GuestBookingQueue  from '@/pages/GuestBookings/GuestBookingQueue';
+import GuestBookingLookup from '@/pages/GuestBookings/GuestBookingLookup';
+import GuestAbuse         from '@/pages/GuestBookings/GuestAbuse';
+import GuestSms           from '@/pages/GuestBookings/GuestSms';
+import GuestEmail         from '@/pages/GuestBookings/GuestEmail';
+import GuestBookingDetail from '@/pages/GuestBookings/GuestBookingDetail';
 import DeliveryDetails    from '@/pages/Deliveries/DeliveryDetails';
 import TicketList         from '@/pages/Support/TicketList';
 import TicketDetail       from '@/pages/Support/TicketDetail';
 import PaymentList        from '@/pages/Payments/PaymentList';
+import PaymentProviders   from '@/pages/PaymentProviders/PaymentProviders';
 import Analytics          from '@/pages/Analytics/Overview';
 import GeneralSettings    from '@/pages/Settings/GeneralSettings';
 import MapSettings        from '@/pages/Settings/MapSettings';
@@ -204,6 +211,13 @@ function App() {
           <Route path="/deliveries"      element={<ProtectedRoute><DeliveryList /></ProtectedRoute>} />
           <Route path="/deliveries/live" element={<ProtectedRoute><LiveDeliveries /></ProtectedRoute>} />
           <Route path="/deliveries/:id"  element={<ProtectedRoute><DeliveryDetails /></ProtectedRoute>} />
+          {/* M16 guest bookings (backend enforces market guard + scope; the UI hides nothing it relies on) */}
+          <Route path="/guest-bookings"         element={<ProtectedRoute><GuestBookingQueue /></ProtectedRoute>} />
+          <Route path="/guest-bookings/lookup"  element={<ProtectedRoute><GuestBookingLookup /></ProtectedRoute>} />
+          <Route path="/guest-bookings/sms"     element={<ProtectedRoute><GuestSms /></ProtectedRoute>} />
+          <Route path="/guest-bookings/email"   element={<ProtectedRoute><GuestEmail /></ProtectedRoute>} />
+          <Route path="/guest-bookings/abuse"   element={<ProtectedRoute><GuestAbuse /></ProtectedRoute>} />
+          <Route path="/guest-bookings/:id"     element={<ProtectedRoute><GuestBookingDetail /></ProtectedRoute>} />
 
           {/* Countries — config is SUPER_ADMIN-only server-side, but ADMINs
               can view the per-market operations queues, so this is a normal
@@ -216,6 +230,7 @@ function App() {
           <Route path="/country-settings/:code" element={<ProtectedRoute><CountrySettings /></ProtectedRoute>} />
 
           {/* Wallet management */}
+          <Route path="/payment-providers" element={<ProtectedRoute><PaymentProviders /></ProtectedRoute>} />
           <Route path="/wallets" element={<ProtectedRoute><PayoutManagement /></ProtectedRoute>} />
 
           {/* Feedback */}

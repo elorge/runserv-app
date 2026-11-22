@@ -1,5 +1,7 @@
 // mobile/src/screens/Partner/ActiveDeliveryScreen.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ProofOfDeliveryPanel from '../../components/ProofOfDeliveryPanel';
+import { proofBlocksCompletion } from '../../utils/proofOfDelivery';
 import {
 View, Text, StyleSheet, TouchableOpacity, ScrollView,
 Alert, StatusBar, Dimensions, Animated, ActivityIndicator,
@@ -576,6 +578,13 @@ return (
               </View>
             </View>
 
+            {/* M16: recipient code + proof photo + failed delivery. The SERVER decides; completion stays locked until it verifies. */}
+            {['PICKED_UP', 'IN_TRANSIT'].includes(status) || delivery?.proof?.failed ? (
+              <ProofOfDeliveryPanel delivery={delivery} theme={theme} accent={COURIER_ACCENT}
+                onProofChange={(proof) => setDelivery((prev) => ({ ...prev, proof }))}
+                onReturned={() => navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] })} />
+            ) : null}
+
             {/* Delivery confirmation panel — inside scroll so it's never clipped by the tab bar */}
             {showComplete && status === 'IN_TRANSIT' && (
               <View style={[s.completeCard, { backgroundColor: theme.backgroundAlt, borderColor: COURIER_ACCENT + '40' }]}>
@@ -634,8 +643,8 @@ onFocus={() => {
               )}
             </TouchableOpacity>
           )}
-          {status === 'IN_TRANSIT' && !showComplete && (
-            <TouchableOpacity style={[s.actionBtn, { backgroundColor: COURIER_ACCENT }]} onPress={() => setShowComplete(true)} activeOpacity={0.88}>
+          {status === 'IN_TRANSIT' && !showComplete && !delivery?.proof?.failed && (
+            <TouchableOpacity style={[s.actionBtn, { backgroundColor: COURIER_ACCENT }]} onPress={() => setShowComplete(true)} disabled={proofBlocksCompletion(delivery)} activeOpacity={0.88}>
               <Ionicons name="checkmark-circle-outline" size={17} color="#080C18" />
               <Text style={s.actionBtnTxt}>{t('activeDeliveryPartner.markAsDelivered')}</Text>
             </TouchableOpacity>

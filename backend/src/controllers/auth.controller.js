@@ -93,6 +93,11 @@ exports.register = async (req, res) => {
   const existingUser = await prisma.user.findFirst({
     where: { OR: [{ email }, { phone }] },
   });
+  if (existingUser && existingUser.authProvider === 'GUEST' && existingUser.phone === phone) {
+    // M15: this number was used for a guest booking. They claim it by verifying it with a code (POST /api/guest/otp/*, then /convert),
+    // never by registering over it: that is how a stranger could take over someone's guest bookings.
+    throw Object.assign(new AppError('This number was used for a guest booking. Verify it with a code to create your account and keep your bookings.', 409), { code: 'GUEST_PHONE_PENDING_CONVERSION' });
+  }
   if (existingUser) throw new AppError('User with this email or phone already exists', 400);
 
   const hashedPassword    = await bcrypt.hash(password, 10);
@@ -186,7 +191,7 @@ exports.login = async (req, res) => {
     where: email ? { email } : { phone },
   });
 
-  if (!user) throw new AppError('Invalid credentials', 401);
+  if (!user || user.authProvider === 'GUEST') throw new AppError('Invalid credentials', 401);   // M15: guest identities have no password sign-in
 
   const isPasswordValid = await bcrypt.compare(password, user.password);
   if (!isPasswordValid) {

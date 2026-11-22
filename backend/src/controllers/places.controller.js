@@ -127,7 +127,8 @@ exports.autocomplete = async (req, res) => {
   if (!sessionToken) throw new AppError('sessionToken is required', 400);
 
   const trimmed = input.trim();
-  const countryCode = normalise(req.user?.countryCode) || null;
+  // Signed-in user's market, else (guest planning routes only) the validated ?countryCode set by guest.routes.
+  const countryCode = normalise(req.user?.countryCode || req.guestCountry) || null;
   // Admin-editable centre from the Country row; only needed when the app sent no GPS.
   const countryCenter = (lat == null || lng == null) ? await getMapCenterForCountry(countryCode) : null;
 
@@ -207,6 +208,44 @@ exports.placeDetails = async (req, res) => {
   }
 };
 
-exports._test = { buildGoogleAutocompleteBody };
+// ─────────────────────────────────────────────────────────────────────────
+// REVERSE GEOCODE — "which address is this map pin / my current location?" (guest planner: map-pin + current-location).
+// Google Geocoding first when a key is configured, then Photon, then an honest coordinate label. Never invents a street.
+// ─────────────────────────────────────────────────────────────────────────
+const GOOGLE_GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json';
+const PHOTON_REVERSE_URL = 'https://photon.komoot.io/reverse';
+const coordLabel = (lat, lng) => `Pinned location (${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)})`;
+
+const reverseViaGoogle = async (lat, lng) => {
+  const { data } = await axios.get(GOOGLE_GEOCODE_URL, { params: { latlng: `${lat},${lng}`, key: PLACES_API_KEY, result_type: 'street_address|route|premise|neighborhood|sublocality' }, timeout: GOOGLE_TIMEOUT_MS });
+  if (data.status !== 'OK' || !data.results?.length) throw new Error(`geocode ${data.status}`);
+  return { formattedAddress: data.results[0].formatted_address, name: null };
+};
+const reverseViaPhoton = async (lat, lng) => {
+  const { data } = await axios.get(PHOTON_REVERSE_URL, { params: { lat, lon: lng, lang: 'en' }, headers: { 'User-Agent': 'RunservApp/1.0' }, timeout: PHOTON_TIMEOUT_MS });
+  const f = data.features?.[0]?.properties;
+  if (!f) throw new Error('photon empty');
+  const line = [f.name, f.street, f.district || f.locality, f.city, f.state].filter(Boolean).join(', ');
+  if (!line) throw new Error('photon empty');
+  return { formattedAddress: line, name: f.name ?? null };
+};
+
+exports.reverse = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+  const lat = Number(req.body.lat); const lng = Number(req.body.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) throw new AppError('A valid location is required.', 400);
+  let found = null; let provider = null;
+  if (await googleSelected()) {
+    try { found = await reverseViaGoogle(lat, lng); provider = 'google'; } catch (e) { logger.error('[places.controller] Google reverse geocode failed, trying Photon:', e.message); }
+  }
+  if (!found) {
+    try { found = await reverseViaPhoton(lat, lng); provider = 'photon'; } catch (e) { logger.error('[places.controller] Photon reverse geocode failed:', e.message); }
+  }
+  // No provider could name it: still usable (the coordinates are exact), and the app says so instead of showing a made-up address.
+  res.status(200).json({ success: true, data: { lat, lng, formattedAddress: found?.formattedAddress ?? coordLabel(lat, lng), name: found?.name ?? null, approximate: !found, provider } });
+};
+
+exports._test = { buildGoogleAutocompleteBody, coordLabel };
 
 module.exports = exports;

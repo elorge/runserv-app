@@ -125,6 +125,16 @@ router.post(
 router.post('/orange/webhook', paymentController.orangeWebhook);
 
 // ─────────────────────────────────────────────
+// MTN MoMo (Request-to-Pay) — refused unless the Admin has enabled it and every gate passes
+// ─────────────────────────────────────────────
+router.post('/momo/initialize', authenticate,
+  [body('amount').optional().isFloat({ min: 0.01 }), body('rideId').optional().isUUID(), body('deliveryId').optional().isUUID(), body('phone').isString().isLength({ min: 7, max: 20 })],
+  paymentController.momoInitialize);
+router.post('/momo/verify', authenticate, [body('reference').optional().notEmpty(), body('paymentId').optional().isUUID()], paymentController.momoVerify);
+// Callback: authenticated by OUR HMAC in the URL; the body is never trusted (status is read back from MTN).
+router.post('/momo/webhook/:ref/:sig', paymentController.momoWebhook);
+
+// ─────────────────────────────────────────────
 // CASH & WALLET
 // ─────────────────────────────────────────────
 

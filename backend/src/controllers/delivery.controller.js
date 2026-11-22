@@ -17,6 +17,17 @@ const { formatMoney } = require('../utils/currency');
 const countrySettingsService = require('../services/countrySettings.service');
 const corporateService = require('../services/corporate.service');
 const tracking = require('../services/tracking.service');
+const pod = require('../services/proofOfDelivery.service');
+const crypto = require('crypto');
+const { podHash, podCodeFor } = require('../services/guestBooking.service');
+
+/** Delivery as the caller may see it: non-sensitive proof state for everyone involved, and the hand-over code ONLY for the sender who owns it. */
+const withProof = (delivery, user) => {
+  if (!delivery) return delivery;
+  const out = { ...delivery, proof: pod.proofView(delivery) };
+  if (delivery.podCodeHash && user.role !== 'DELIVERY_PARTNER' && delivery.customerId === user.id && !delivery.podVerifiedAt && !delivery.failedAt) out.podCode = podCodeFor(delivery.id);
+  return out;
+};
 
 exports.getFeeEstimate = async (req, res) => {
   const { pickupLat, pickupLng, dropoffLat, dropoffLng, packageWeight } = req.query;
@@ -50,6 +61,11 @@ exports.getFeeEstimate = async (req, res) => {
 };
 
 exports.requestDelivery = async (req, res) => {
+  // M16.2.1 (P1.3): pilot scope. With PARCEL_PILOT_SCOPE=guest_only, registered-customer parcels are refused so that every parcel in the pilot
+  // follows ONE recipient-notification workflow (guest parcels: email-first). Unset = unchanged behaviour.
+  if (!require('../services/deliveryComms.service').registeredParcelsAllowed()) {
+    throw Object.assign(new AppError('Parcel booking from registered accounts is not available during the pilot. Please book as a guest.', 403), { code: 'PILOT_GUEST_ONLY' });
+  }
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, errors: errors.array() });
@@ -118,8 +134,14 @@ exports.requestDelivery = async (req, res) => {
     ? await corporateService.evaluateBooking({ userId: req.user.id, estimatedFare: estimatedFee, serviceType: 'DELIVERY', purpose, purposeCategory, approvalId })
     : null;
 
+  // M15: a hand-over code for every delivery when POD_CODE_ALL_DELIVERIES=true (default off; guest parcels always have one).
+  const withCode = pod.codeForAllDeliveries();
+  const newId = withCode ? crypto.randomUUID() : null;
+  const podCode = withCode ? podCodeFor(newId) : null;
+
   const delivery = await prisma.delivery.create({
     data: {
+      ...(withCode ? { id: newId, podCodeHash: podHash(newId, podCode) } : {}),
       paymentMethod: riderPaymentChoice(req.body.paymentMethod),
       customerId: req.user.id,
       pickupAddress, pickupLat, pickupLng, pickupContact,
@@ -160,6 +182,7 @@ exports.requestDelivery = async (req, res) => {
     packageWeight:      delivery.packageWeight,
     payer:              orgEval ? 'ORGANIZATION' : 'SELF',
     organizationName:   orgEval?.company.name ?? null,
+    proofOfDeliveryRequired: withCode,
     customer: {
       firstName:    delivery.customer.firstName,
       profileImage: delivery.customer.profileImage,
@@ -173,10 +196,13 @@ exports.requestDelivery = async (req, res) => {
     broadcastToPartners(io, 'delivery:incoming_request', deliveryPayload);
   }
 
+  // Recipient gets the code by SMS (best effort, international format). The sender also sees it in the app.
+  if (withCode) pod.smsRecipientCode({ phone: dropoffContact, countryCode: pricingCtx.countryCode, code: podCode }).catch(() => {});
+
   res.status(201).json({
     success: true,
     message: 'Delivery requested successfully. Looking for nearby delivery partners...',
-    data: { delivery, feeBreakdown: feeResult, partnerFloorApplied: !!partnerFloorResult, promoApplied: !!appliedPromo }
+    data: { delivery: withProof(delivery, req.user), feeBreakdown: feeResult, partnerFloorApplied: !!partnerFloorResult, promoApplied: !!appliedPromo, ...(withCode ? { podCode } : {}) }
   });
 };
 
@@ -204,7 +230,7 @@ exports.getActiveDelivery = async (req, res) => {
     partnerLocation = tracking.assignedLocation(pp);
   }
 
-  res.status(200).json({ success: true, data: { delivery, partnerLocation } });
+  res.status(200).json({ success: true, data: { delivery: withProof(delivery, req.user), partnerLocation } });
 };
 
 exports.acceptDelivery = async (req, res) => {
@@ -340,6 +366,9 @@ exports.completeDelivery = async (req, res) => {
   if (!delivery) throw new AppError('Delivery not found', 404);
   if (delivery.partnerId !== req.user.id) throw new AppError('Unauthorized', 403);
   if (delivery.status !== 'IN_TRANSIT') throw new AppError('Delivery is not in transit', 400);
+  // M15: a failed delivery is returned to the sender, never completed; a delivery with a hand-over code needs that code first.
+  if (delivery.failedAt) throw Object.assign(new AppError('This delivery was marked as failed and is being returned to the sender.', 409), { code: 'ALREADY_FAILED' });
+  if (pod.proofPending(delivery)) throw Object.assign(new AppError('Enter the recipient\'s hand-over code before completing this delivery.', 409), { code: 'POD_REQUIRED' });
   const isOrg = delivery.payerType === 'ORGANIZATION';
 
   const { countryCode: deliveryCountry } = await getPricingContextForUserId(delivery.customerId);
@@ -520,7 +549,7 @@ exports.getDeliveryById = async (req, res) => {
     throw new AppError('Unauthorized', 403);
   }
 
-  res.status(200).json({ success: true, data: { delivery } });
+  res.status(200).json({ success: true, data: { delivery: withProof(delivery, req.user) } });
 };
 
 exports.rateDelivery = async (req, res) => {
@@ -630,3 +659,17 @@ exports.getNearbyPartners = async (req, res) => {
 };
 
 module.exports = exports;
+
+// ── M15: proof of delivery / failed delivery (partner only; routes in delivery.routes.js) ──────────────────────────────
+exports.verifyProof = async (req, res) => {
+  const r = await pod.verifyProof({ deliveryId: req.params.id, partnerId: req.user.id, code: req.body.code, photoUrl: req.body.photoUrl, ip: req.ip });
+  res.status(200).json({ success: true, message: 'Hand-over confirmed. You can now complete the delivery.', data: r });
+};
+exports.failDelivery = async (req, res) => {
+  const r = await pod.markFailed({ deliveryId: req.params.id, partnerId: req.user.id, reason: req.body.reason, note: req.body.note, photoUrl: req.body.photoUrl, ip: req.ip });
+  res.status(200).json({ success: true, message: 'Recorded. Return the parcel to the sender.', data: r });
+};
+exports.confirmReturned = async (req, res) => {
+  const r = await pod.confirmReturned({ deliveryId: req.params.id, partnerId: req.user.id, ip: req.ip });
+  res.status(200).json({ success: true, message: 'Return recorded.', data: r });
+};

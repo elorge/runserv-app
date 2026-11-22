@@ -262,6 +262,7 @@ const Sidebar: React.FC = () => {
       children: [
         { name: 'All Deliveries', href: '/deliveries',      show: can.viewDeliveries   },
         { name: 'Live Map',       href: '/deliveries/live', show: can.manageDeliveries },
+        { name: 'Guest bookings', href: '/guest-bookings',   show: can.viewDeliveries   },
       ],
     },
     {
@@ -311,6 +312,7 @@ const Sidebar: React.FC = () => {
     },
     { name: 'Approvals', href: '/approvals', icon: ShieldCheck, show: can.managePartnerships },
     { name: 'Payments',  href: '/payments',  icon: CreditCard, show: can.viewPayments  },
+    { name: 'Payment providers', href: '/payment-providers', icon: ShieldCheck, show: can.viewPayments && can.viewGlobal },
     { name: 'Demo requests', href: '/demo-requests', icon: Inbox, show: can.managePartnerships },
     { name: 'Analytics', href: '/analytics', icon: BarChart3,  show: can.viewAnalytics },
     { name: 'Countries', href: '/countries', icon: Globe,     show: can.viewSettings  },
@@ -323,7 +325,7 @@ const Sidebar: React.FC = () => {
   // Grouping for section labels
   const coreItems     = navigation.filter(i => i.show && ['/', '/users', '/feedback'].includes(i.href));
   const opsItems      = navigation.filter(i => i.show && ['/drivers', '/rides', '/partners', '/deliveries'].includes(i.href));
-  const financeItems  = navigation.filter(i => i.show && ['/wallets', '/payments', '/approvals'].includes(i.href));
+  const financeItems  = navigation.filter(i => i.show && ['/wallets', '/payments', '/payment-providers', '/approvals'].includes(i.href));
   const featureItems  = navigation.filter(i => i.show && ['/corporate'].includes(i.href));
   const partnerItems  = navigation.filter(i => i.show && ['/fleets', '/banks'].includes(i.href));
   const systemItems   = navigation.filter(i => i.show && ['/support/tickets', '/demo-requests', '/analytics', '/countries', '/country-settings', '/staff', '/settings', '/settings/maps'].includes(i.href));

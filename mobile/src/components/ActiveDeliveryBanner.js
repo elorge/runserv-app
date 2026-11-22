@@ -15,19 +15,21 @@ const STATUS_LABEL_KEYS = {
 
 export default function ActiveDeliveryBanner({ delivery, role = 'CUSTOMER', onPress, onCancel, theme }) {
   const { t } = useTranslation();
-  if (!delivery) return null;
-
-  const cfg    = STATUS_LABEL_KEYS[delivery.status] ?? STATUS_LABEL_KEYS.ASSIGNED;
+  // Hooks first, early return after: hook order must not depend on props.
+  const cfg    = STATUS_LABEL_KEYS[delivery?.status] ?? STATUS_LABEL_KEYS.ASSIGNED;
   const pulseA = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    if (!delivery) return undefined;
     const loop = Animated.loop(Animated.sequence([
       Animated.timing(pulseA, { toValue: 0.5, duration: 900, useNativeDriver: true }),
       Animated.timing(pulseA, { toValue: 1,   duration: 900, useNativeDriver: true }),
     ]));
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [!!delivery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!delivery) return null;
 
   const canCancel = role === 'CUSTOMER' && delivery.status === 'PENDING';
 

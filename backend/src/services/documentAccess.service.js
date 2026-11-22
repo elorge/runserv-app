@@ -24,18 +24,22 @@ const SOURCES = {
   DRIVER_PROFILE:   { model: 'driverProfile',          fields: PROFILE_FIELDS, dept: 'RIDES',      owned: true },
   DELIVERY_PROFILE: { model: 'deliveryPartnerProfile', fields: PROFILE_FIELDS, dept: 'DELIVERIES', owned: true },
   FLEET_DOCUMENT:   { model: 'fleetPartnerDocument',   fields: ['fileUrl'],    dept: 'RIDES',      owned: false },
+  // M15: the courier's proof-of-delivery / failed-delivery photo. NOT an identity document, so Runserv SUPPORT staff may open it too
+  // (they review disputed and failed deliveries), still inside their markets, still audited, still a short-lived link.
+  DELIVERY_PROOF:   { model: 'delivery',               fields: ['podPhotoUrl'], dept: 'DELIVERIES', depts: ['DELIVERIES', 'SUPPORT'], owned: false, viaCustomer: true, supportCanView: true },
 };
 
 /** Pure: may this staff member open documents of this source? */
 const staffMayView = (user, cfg, countryCode) => {
   if (user.role === 'SUPER_ADMIN') return true;
+  if (user.role === 'SUPPORT' && cfg.supportCanView) return canActInMarket(user, countryCode);
   if (user.role !== 'ADMIN') return false;
-  if (user.adminDepartment && user.adminDepartment !== cfg.dept) return false;
-  return cfg.owned ? canActInMarket(user, countryCode) : true;
+  if (user.adminDepartment && !(cfg.depts || [cfg.dept]).includes(user.adminDepartment)) return false;
+  return cfg.owned || cfg.viaCustomer ? canActInMarket(user, countryCode) : true;
 };
 
 const decide = async ({ user, cfg, source, record }) => {
-  if (['ADMIN', 'SUPER_ADMIN'].includes(user.role) && staffMayView(user, cfg, record.user?.countryCode)) return { allowed: true, scope: 'STAFF' };
+  if (['ADMIN', 'SUPER_ADMIN', 'SUPPORT'].includes(user.role) && staffMayView(user, cfg, record.user?.countryCode ?? record.customer?.countryCode)) return { allowed: true, scope: 'STAFF' };
   if (cfg.owned && record.userId === user.id) return { allowed: true, scope: 'OWNER' };
   const member = await fleetAccess.getMembership(user.id);
   if (member) {
@@ -55,7 +59,7 @@ const decide = async ({ user, cfg, source, record }) => {
 const requestDocumentAccess = async ({ user, source, id, field, reason, req, signer = upload.signedPrivateUrl }) => {
   const cfg = SOURCES[source];
   if (!cfg || !cfg.fields.includes(field)) throw new AppError('Unknown document.', 400);
-  const record = await prisma[cfg.model].findUnique({ where: { id }, ...(cfg.owned && { include: { user: { select: { countryCode: true } } } }) });
+  const record = await prisma[cfg.model].findUnique({ where: { id }, ...(cfg.owned && { include: { user: { select: { countryCode: true } } } }), ...(cfg.viaCustomer && { include: { customer: { select: { countryCode: true } } } }) });
   // Same answer for "no such record" and "not yours" so ids cannot be probed.
   const audit = (action, details) => logActivity({ userId: user.id, action, entityType: cfg.model, entityId: id, details: { source, field, reason: reason ? String(reason).slice(0, 200) : null, ...details }, req });
   if (!record) { await audit('document_access_denied', { why: 'not_found' }); throw new AppError('Document not found.', 404); }

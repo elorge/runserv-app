@@ -1,5 +1,6 @@
 // mobile/src/screens/Customer/DeliveryTrackingScreen.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import HandoverCodeCard from '../../components/HandoverCodeCard';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Alert, StatusBar, Dimensions, Animated, ActivityIndicator,
@@ -517,6 +518,7 @@ try {
 
         <Animated.View style={{ height: scrollHeightAnim, overflow: 'hidden' }}>
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={s.scrollContent}>
+            <HandoverCodeCard delivery={delivery} theme={theme} />
 
             <View style={s.sheetHeader}>
               <Text style={[s.statusTitle, { color: theme.foreground }]}>{t(statusCfg.labelKey)}</Text>

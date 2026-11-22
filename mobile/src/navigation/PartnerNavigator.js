@@ -17,6 +17,7 @@ import IncomingDeliveryQueueScreen from '../screens/Partner/IncomingDeliveryQueu
 import ActiveDeliveryScreen from '../screens/Partner/ActiveDeliveryScreen';
 import CourierFloorPriceScreen from '../screens/Partner/CourierFloorPriceScreen';
 import PartnerDocumentsScreen from '../screens/Partner/PartnerDocumentsScreen';
+import RoadToOnlineScreen from '../screens/Shared/RoadToOnlineScreen';
 import WalletTopUpScreen from '../screens/Shared/WalletTopUpScreen';
 import WithdrawalScreen from '../screens/Shared/WithdrawalScreen';
 import ProfileScreen from '../screens/Shared/ProfileScreen';
@@ -50,6 +51,7 @@ const DashboardStack = () => (
     <Stack.Screen name="ActiveDelivery"      component={ActiveDeliveryScreen}       />
     <Stack.Screen name="FloorPrice"          component={CourierFloorPriceScreen}    />
     <Stack.Screen name="PartnerDocuments"    component={PartnerDocumentsScreen}     />
+    <Stack.Screen name="RoadToOnline"        component={RoadToOnlineScreen}         />
     <Stack.Screen name="DispatchStatus"      component={DispatchStatusScreen}       />
     <Stack.Screen name="LocationSharing"  component={LocationSharingScreen}  />
     <Stack.Screen name="PartnerHistory"      component={PartnerHistoryScreen}       />

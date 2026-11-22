@@ -23,7 +23,7 @@ router.use((req, res, next) => {
 // An admin with assigned countries can only open/change records of those countries,
 // and cannot enter sections that are global by nature. Everyone else is unaffected.
 router.use(marketGuard);
-router.use(['/logs', '/promo-codes', '/corporate', '/fleet', '/banks'], denyScoped);
+router.use(['/logs', '/promo-codes', '/corporate', '/fleet', '/banks', '/payment-providers', '/payment-ops'], denyScoped);
 
 // ─────────────────────────────────────────────
 // DASHBOARD
@@ -32,6 +32,9 @@ router.use(['/logs', '/promo-codes', '/corporate', '/fleet', '/banks'], denyScop
 // Mounted before the specific handlers below so /countries/* resolves to the
 // dedicated router rather than falling through to a :id-style route.
 router.use('/countries', adminCountryRoutes);
+router.use('/', require('./adminPayments.routes'));
+// M15: guest booking queue, support lookup, abuse signals, block/unblock, proof override.
+router.use('/guest-bookings', requireScope('RIDES', 'DELIVERIES', 'SUPPORT'), require('./adminGuest.routes'));
 
 router.get('/dashboard/stats', adminController.getDashboardStats);
 

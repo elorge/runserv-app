@@ -72,6 +72,7 @@ model User {
   receivedTransfers    Transfer[]              @relation("ReceivedTransfers")
   sentTransfers        Transfer[]              @relation("SentTransfers")
   wallet               Wallet?
+  guestIdentity        GuestIdentity?
 
   // Runserv fleet and bank-partnership relations (additive extension)
   ownedFleetPartners      FleetPartner[]          @relation("FleetPartnerOwner")
@@ -264,6 +265,7 @@ model Ride {
   corporateTrip      CorporateTrip?
   payment            Payment?
   rating             Rating?
+  guestBooking       GuestBooking?
   customer           User           @relation("CustomerRides", fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   driver             User?          @relation("DriverRides", fields: [driverId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
@@ -300,6 +302,7 @@ model Delivery {
   actualFee          Decimal?       @db.Decimal(14, 2)
   deliveryImageUrl   String?
   recipientName      String?
+  recipientEmail     String?        // M16.2: where the hand-over code + tracking link are emailed (guest parcels). Masked in Admin.
   recipientSignature String?
   promoCode          String?
   requestedAt        DateTime       @default(now())
@@ -312,6 +315,25 @@ model Delivery {
   paymentMethod      String         @default("CASH")
   cancellationReason String?
   inTransitAt        DateTime?      @db.Timestamptz(6)
+  // M15 proof of delivery. The recipient gets a one-time code; the courier must enter it at hand-over. Only a keyed hash is stored.
+  podCodeHash        String?
+  // M16.2.1: code lifecycle. The code is derived from (secret, delivery id, podCodeNonce); NULL nonce = a pre-M16.2.1 delivery (legacy derivation).
+  // Rotation replaces nonce + hash in ONE conditional update, so the previous code stops working at the same instant the new one starts.
+  podCodeNonce       String?
+  podCodeVersion     Int            @default(1)
+  podCodeExpiresAt   DateTime?      @db.Timestamptz(6)   // NULL = no expiry (legacy rows, or POD_CODE_TTL_HOURS unset)
+  podCodeRotatedAt   DateTime?      @db.Timestamptz(6)
+  // Atomic resend/rotate reservation: the cooldown is enforced by a conditional UPDATE on this column, not by a read-then-write.
+  podNotifyReservedAt DateTime?     @db.Timestamptz(6)
+  podCodeAttempts    Int            @default(0)
+  podVerifiedAt      DateTime?      @db.Timestamptz(6)
+  podMethod          String?        // CODE | CODE_PHOTO | SUPPORT_OVERRIDE
+  podPhotoUrl        String?
+  // M15 failed delivery (recipient unavailable, wrong address, refused). The parcel returns to the sender.
+  failedAt           DateTime?      @db.Timestamptz(6)
+  failedReason       String?
+  returnStatus       String?        // RETURNING | RETURNED
+  returnedAt         DateTime?      @db.Timestamptz(6)
   isCorporate        Boolean        @default(false)
   payerType          RidePayer      @default(SELF)
   companyId          String?
@@ -320,6 +342,7 @@ model Delivery {
   partner            User?          @relation("PartnerDeliveries", fields: [partnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   payment            Payment?
   rating             Rating?
+  guestBooking       GuestBooking?
 
   @@index([customerId])
   @@index([partnerId])
@@ -349,13 +372,26 @@ model Payment {
   provider         String?
   // Orange Money pay_token (see WalletTransaction.providerRef)
   providerRef      String?
+  // Multi-provider payment layer (see docs/PAYMENTS_MULTI_PROVIDER.md)
+  // Client-supplied Idempotency-Key (scoped per user) — a repeated request returns the same attempt, never a second charge.
+  idempotencyKey   String?
+  // The provider's own status word, exactly as last reported (never used for decisions on its own).
+  providerStatus   String?
+  // Amount / currency the PROVIDER confirmed on server-side verification. Must equal amount / currency to settle.
+  verifiedAmount   Decimal?          @db.Decimal(14, 2)
+  verifiedCurrency String?
+  settledAt        DateTime?
+  events           PaymentEvent[]
+  exceptions       PaymentException[]
   commissionLedger CommissionLedger?
   delivery         Delivery?         @relation(fields: [deliveryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   ride             Ride?             @relation(fields: [rideId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   user             User              @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
+  @@unique([userId, idempotencyKey])
   @@index([userId])
   @@index([status])
+  @@index([provider, providerRef])
 }
 
 model Rating {
@@ -1699,6 +1735,14 @@ enum PaymentStatus {
   COMPLETED
   FAILED
   REFUNDED
+  // Multi-provider layer: attempt cancelled by the payer / timed out. No funds are assumed collected.
+  CANCELLED
+  EXPIRED
+  // Refund asked for but not yet confirmed by the provider / finance.
+  REFUND_PENDING
+  PARTIALLY_REFUNDED
+  // Conflicting, late or unverifiable provider evidence — automated financial side effects are held for a human.
+  REVIEW_REQUIRED
 }
 
 enum PaymentMethod {
@@ -1972,4 +2016,335 @@ model OutboxEvent {
 
   @@unique([type, aggregateType, aggregateId])
   @@index([status, nextAttemptAt])
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MULTI-PROVIDER PAYMENT LAYER
+// Additive only: reuses Payment (the payment attempt), LedgerEntry and ActivityLog. Nothing here duplicates them.
+// ═════════════════════════════════════════════════════════════════════════════
+
+enum ProviderEnvironment {
+  SANDBOX
+  LIVE
+}
+
+// Where a provider is in its business/technical onboarding. A provider can only be switched on for LIVE once this is
+// PRODUCTION_APPROVED (written approval + production credentials recorded by a Super Admin).
+enum ProviderOnboardingStatus {
+  PLANNED
+  AWAITING_ONBOARDING
+  SANDBOX_ACCESS
+  CERTIFICATION
+  PRODUCTION_APPROVED
+}
+
+// One row per provider x market x environment. No row = the legacy default (Paystack / Flutterwave / Orange follow the
+// country's paymentProviders list; MTN MoMo is OFF).
+model PaymentProviderConfig {
+  id               String                   @id @default(uuid())
+  providerKey      String // paystack | flutterwave | orange | mtn_momo
+  countryCode      String // ISO alpha-2
+  environment      ProviderEnvironment      @default(SANDBOX)
+  enabled          Boolean                  @default(false)
+  onboardingStatus ProviderOnboardingStatus @default(PLANNED)
+  // Admin-declared, per market: { currencies: ["NGN"], services: ["RIDE","DELIVERY"], methods: ["MOBILE_MONEY"], minAmount, maxAmount }
+  capabilities     Json?
+  // Non-secret settings only (callback URL, integration version, notes).
+  safeConfig       Json?
+  // Secrets entered through the Admin are stored ENCRYPTED (AES-256-GCM, key from PAYMENT_SECRETS_KEY) and never returned.
+  secretsEnc       Json?
+  secretsRotatedAt DateTime?               @db.Timestamptz(6)
+  lastVerifiedAt   DateTime?               @db.Timestamptz(6)
+  updatedById      String?
+  createdAt        DateTime                 @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime                 @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([providerKey, countryCode, environment])
+  @@index([providerKey, enabled])
+}
+
+// Maker-checker for the high-impact switch: turning a provider ON for LIVE needs a DIFFERENT Super Admin to approve.
+model ProviderChangeRequest {
+  id           String              @id @default(uuid())
+  providerKey  String
+  countryCode  String
+  environment  ProviderEnvironment
+  action       String // ENABLE
+  reason       String
+  status       MoneyActionStatus   @default(PENDING)
+  requestedById String
+  decidedById  String?
+  decidedAt    DateTime?           @db.Timestamptz(6)
+  decisionNote String?
+  createdAt    DateTime            @default(now()) @db.Timestamptz(6)
+
+  @@index([status, createdAt])
+}
+
+// Append-only evidence trail for a payment: every webhook, verification and state change. Blocked from UPDATE/DELETE in
+// prisma/sql/post_migrate.sql. (provider, externalEventId) is unique so a replayed callback is recognised, not re-processed.
+model PaymentEvent {
+  id              String   @id @default(uuid())
+  paymentId       String?
+  provider        String
+  eventType       String // WEBHOOK | VERIFY | STATE_CHANGE | ADMIN
+  source          String // provider | client | system | admin
+  externalEventId String?
+  verification    String   @default("NA") // VERIFIED | FAILED | NA
+  outcome         String // e.g. APPLIED | DUPLICATE | IGNORED | REJECTED | REVIEW_REQUIRED
+  fromStatus      String?
+  toStatus        String?
+  // Redacted, bounded metadata. NEVER secrets, auth headers, PINs or OTPs.
+  meta            Json?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  payment         Payment? @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([provider, externalEventId])
+  @@index([paymentId, createdAt])
+  @@index([provider, createdAt])
+}
+
+enum PaymentExceptionStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+// The exceptions queue: anything money-related a human has to look at.
+model PaymentException {
+  id           String                 @id @default(uuid())
+  paymentId    String?
+  provider     String
+  // PENDING_TOO_LONG | WEBHOOK_VERIFICATION_FAILED | AMOUNT_MISMATCH | DUPLICATE_CALLBACK | REFUND_EXCEPTION
+  // | RECONCILIATION_MISMATCH | STATUS_CONFLICT | MISSING_AT_PROVIDER | MISSING_INTERNALLY
+  kind         String
+  status       PaymentExceptionStatus @default(OPEN)
+  detail       Json?
+  dedupeKey    String?                @unique
+  resolvedById String?
+  resolvedAt   DateTime?              @db.Timestamptz(6)
+  resolution   String?
+  createdAt    DateTime               @default(now()) @db.Timestamptz(6)
+  payment      Payment?               @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status, createdAt])
+  @@index([provider, kind])
+}
+
+model ReconciliationRun {
+  id          String   @id @default(uuid())
+  provider    String
+  periodFrom  DateTime @db.Timestamptz(6)
+  periodTo    DateTime @db.Timestamptz(6)
+  source      String // statement reference / file name
+  matched     Int      @default(0)
+  mismatched  Int      @default(0)
+  missingHere Int      @default(0)
+  missingThere Int     @default(0)
+  summary     Json?
+  createdById String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([provider, createdAt])
+}
+
+// ───────────────────────── M15: verified guest booking ─────────────────────────
+// A guest is a phone-verified person with a backing User row (authProvider GUEST, random unusable password, CASH only), so the
+// existing ride/delivery/dispatch pipeline is reused unchanged. A guest cannot sign in with a password; they act only through a
+// short-lived opaque GuestSession issued after OTP verification. Converting to an account upgrades the same User row.
+model GuestIdentity {
+  id          String         @id @default(uuid())
+  // M16.1: phone is now NULL for email-verified identities (their number lives in contactPhone and is NOT verified).
+  phone       String?        @unique
+  countryCode String
+  userId      String         @unique
+  verifiedAt  DateTime       @db.Timestamptz(6)
+  // M16.1: which channel proved identity, and when. Email verification never implies phone verification.
+  email           String?    @unique
+  contactPhone    String?
+  verifiedChannel String     @default("PHONE")   // EMAIL | PHONE
+  emailVerifiedAt DateTime?  @db.Timestamptz(6)
+  phoneVerifiedAt DateTime?  @db.Timestamptz(6)
+  convertedAt DateTime?      @db.Timestamptz(6)
+  blockedAt   DateTime?      @db.Timestamptz(6)
+  blockReason String?
+  createdAt   DateTime       @default(now()) @db.Timestamptz(6)
+  user        User           @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sessions    GuestSession[]
+  bookings    GuestBooking[]
+
+  @@index([createdAt])
+}
+
+model GuestOtp {
+  id          String    @id @default(uuid())
+  // M16.1: phone is NULL for email challenges. identityKey = keyed hash of "<channel>:<normalised value>" (lock + cap key).
+  phone       String?
+  countryCode String
+  channel     String    @default("PHONE")                     // EMAIL | PHONE
+  purpose     String    @default("GUEST_BOOKING_VERIFY")
+  identityKey String?
+  email       String?
+  contactPhone String?
+  codeNonce   String?                                         // email codes are derived from (secret, id, nonce): never stored
+  supersededAt DateTime? @db.Timestamptz(6)
+  codeHash    String
+  attempts    Int       @default(0)
+  expiresAt   DateTime  @db.Timestamptz(6)
+  consumedAt  DateTime? @db.Timestamptz(6)
+  ipHash      String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([phone, createdAt])
+  @@index([identityKey, purpose, createdAt])
+  @@index([ipHash, createdAt])
+  @@index([expiresAt])
+}
+
+model GuestSession {
+  id         String        @id @default(uuid())
+  identityId String
+  tokenHash  String        @unique
+  expiresAt  DateTime      @db.Timestamptz(6)
+  revokedAt  DateTime?     @db.Timestamptz(6)
+  createdAt  DateTime      @default(now()) @db.Timestamptz(6)
+  identity   GuestIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId])
+  @@index([expiresAt])
+}
+
+model GuestBooking {
+  id                String        @id @default(uuid())
+  // Short human reference the guest can quote to support (e.g. RS-7K3QX9). Not a credential.
+  reference         String        @unique
+  identityId        String
+  service           String        // RIDE | PARCEL
+  rideId            String?       @unique
+  deliveryId        String?       @unique
+  idempotencyKey    String
+  requestHash       String
+  quoteId           String        @unique
+  fare              Decimal       @db.Decimal(14, 2)
+  currency          String
+  vehicleType       String
+  // Tracking access: only a hash of the high-entropy token is stored. Scoped to this one booking, expiring, revocable.
+  trackingTokenHash String        @unique
+  // The token itself is never stored: it is derived as HMAC(secret, bookingId + nonce). Rotating = a new nonce.
+  trackingNonce     String
+  trackingExpiresAt DateTime      @db.Timestamptz(6)
+  trackingRevokedAt DateTime?     @db.Timestamptz(6)
+  // Signed quote + server-side fare breakdown at confirmation (fare calculation trace for support).
+  quoteSnapshot     Json?
+  createdAt         DateTime      @default(now()) @db.Timestamptz(6)
+  identity          GuestIdentity @relation(fields: [identityId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ride              Ride?         @relation(fields: [rideId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  delivery          Delivery?     @relation(fields: [deliveryId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([identityId, idempotencyKey])
+  @@index([identityId, createdAt])
+  @@index([createdAt])
+}
+
+// Append-only trail of guest verification, booking, cancellation, tracking and conversion events (support + abuse review).
+model GuestAuditEvent {
+  id         String   @id @default(uuid())
+  event      String
+  identityId String?
+  bookingId  String?
+  ipHash     String?
+  meta       Json?
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([identityId, createdAt])
+  @@index([bookingId])
+  @@index([event, createdAt])
+}
+
+// M16: durable SMS for guest bookings. Written in the booking transaction; delivered by a worker with retry / dead-letter.
+// Holds NO message text, code or token (derived at send time). `toPhone` is cleared once it is no longer needed.
+model SmsOutbox {
+  id            String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  kind          String
+  bookingId     String
+  toPhone       String?
+  toMasked      String
+  countryCode   String?
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  lastError     String?
+  sentAt        DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([kind, bookingId])
+  @@index([status, nextAttemptAt])
+  @@index([bookingId])
+}
+
+// ── M16.1: durable email outbox + two-provider quota routing ────────────────────────────────────────────────────────
+// One row per email. Holds NO code and NO message text: the OTP code is derived again at send time from the challenge (otpId).
+// `toEmail` is kept only while needed (cleared on SENT/SKIPPED, and on DEAD after the scrub window).
+model EmailOutbox {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  kind              String                                   // GUEST_OTP | RECIPIENT_CODE | RECIPIENT_CODE_REISSUED | GUEST_TRACKING
+  otpId             String?
+  bookingId         String?                                  // M16.2: RECIPIENT_CODE / GUEST_TRACKING rows point at the booking instead of an OTP challenge
+  toEmail           String?
+  toMasked          String
+  status            String    @default("PENDING")            // PENDING | PROCESSING | SENT | DEAD | SKIPPED
+  attempts          Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  provider          String?                                  // brevo | resend (set when a slot is reserved)
+  routeReason       String?                                  // BREVO_ALLOCATION | BREVO_ALLOCATION_EXHAUSTED | BREVO_QUOTA_RESPONSE | TRANSIENT_FALLBACK | BREVO_PAUSED
+  slotHeld          Boolean   @default(false)                // a provider slot is reserved for this job (ambiguous timeout keeps it)
+  providerMessageId String?
+  errorCategory     String?                                  // INVALID_ADDRESS | QUOTA | AUTH | TRANSIENT | TIMEOUT | CONFIG | CAP
+  lastError         String?
+  deliveryStatus    String?                                  // ACCEPTED | DELIVERED | SOFT_BOUNCE | HARD_BOUNCE | BLOCKED | ERROR
+  deliveryAt        DateTime? @db.Timestamptz(6)
+  sentAt            DateTime? @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt])
+  @@index([otpId])
+  @@index([bookingId, kind, createdAt])
+  @@index([kind, status, createdAt])
+  @@index([providerMessageId])
+}
+
+// Shared atomic counters per provider per quota window (PostgreSQL, not process memory).
+model EmailQuotaWindow {
+  provider       String
+  windowKey      String
+  reserved       Int       @default(0)
+  accepted       Int       @default(0)
+  exhaustedAt    DateTime? @db.Timestamptz(6)               // provider reported its own daily quota is used up
+  unhealthyUntil DateTime? @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@id([provider, windowKey])
+}
+
+// Operator pause switch per provider. An Admin can pause; nobody can raise a free quota from here.
+model EmailProviderControl {
+  provider  String    @id
+  paused    Boolean   @default(false)
+  pausedAt  DateTime? @db.Timestamptz(6)
+  pausedBy  String?
+}
+
+// Idempotent webhook ledger: the same provider event delivered twice changes nothing.
+model EmailWebhookEvent {
+  id         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  provider   String
+  eventKey   String
+  messageId  String?
+  event      String
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([provider, eventKey])
 }

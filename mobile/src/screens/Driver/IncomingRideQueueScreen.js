@@ -263,13 +263,15 @@ const rc = StyleSheet.create({
 });
 
 // ── Detail modal ──────────────────────────────────────────────────────────────
-const DetailModal = ({
+// Hook order must not depend on props: the wrapper decides whether to render, the inner component always runs all its hooks.
+const DetailModal = (props) => (props.req ? <DetailModalInner {...props} /> : null);
+
+const DetailModalInner = ({
   req, theme, walletBalance, loadingWallet,
   accepting, onAccept, onDecline, onClose, onNavigateTopUp,
 }) => {
   const { formatMoney } = useCurrency();
   const { t } = useTranslation();
-  if (!req) return null;
   const color     = fareColor(req.estimatedFare);
   const canAfford = req.isOrg || (!loadingWallet && walletBalance >= req.estimatedFare);
   const slideA    = useRef(new Animated.Value(height)).current;

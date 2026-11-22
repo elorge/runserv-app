@@ -389,7 +389,7 @@ const fi = StyleSheet.create({
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
-export default function RegisterScreen({ navigation }) {
+export default function RegisterScreen({ navigation, route }) {
   const { theme, mode } = useTheme();
   const { register }    = useAuth();
   const { t }            = useTranslation();
@@ -397,7 +397,9 @@ export default function RegisterScreen({ navigation }) {
   const darkMode        = mode === 'dark';
 
   const [step,            setStep]            = useState(1);
-  const [roleId,          setRoleId]          = useState(ROLES.length === 1 ? ROLES[0].id : null);
+  // The Driver / Courier Pass front door passes the role it was built for, so the person is not asked again.
+  const presetRole = ROLES.find((r) => r.id === route?.params?.role)?.id ?? null;
+  const [roleId,          setRoleId]          = useState(ROLES.length === 1 ? ROLES[0].id : presetRole);
   const [firstName,       setFirstName]       = useState('');
   const [lastName,        setLastName]        = useState('');
   const [email,           setEmail]           = useState('');
@@ -507,6 +509,10 @@ export default function RegisterScreen({ navigation }) {
       Animated.timing(frmY, { toValue: 0, duration: 350, useNativeDriver: true }),
     ]).start();
   };
+
+  // Arrived from a Driver / Courier Pass: the role is already chosen, so go straight to the details form
+  // (the "Change" link on that form still goes back to the role picker).
+  useEffect(() => { if (presetRole) goToStep2(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFinalRegister = async () => {
     if (!firstName.trim() || !lastName.trim()) return Alert.alert(t('register.missingFieldsTitle'),    t('register.missingFieldsBody'));

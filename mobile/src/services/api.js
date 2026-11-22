@@ -3,6 +3,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE_URL } from '../config/constants';
 import { emitForceLogout } from './authEvents';
+import { isGuestRequest, shapeRejection, shouldForceLogout } from './apiHelpers';
 import * as FileSystem from 'expo-file-system/legacy';
 import { toBase64DataUri } from '../utils/toBase64DataUri';
 
@@ -56,7 +57,8 @@ api.interceptors.request.use(
       AsyncStorage.getItem('authToken'),
       getOrCreateDeviceId(),
     ]);
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    // A guest-session call brings its own "Guest <token>" header: never overwrite it with a registered user's Bearer token.
+    if (token && !isGuestRequest(config)) config.headers.Authorization = `Bearer ${token}`;
     config.headers['X-Device-ID'] = deviceId;
     return config;
   },
@@ -67,12 +69,13 @@ api.interceptors.request.use(
 api.interceptors.response.use(
   (response) => response.data,
   async (error) => {
-    if (error.response?.status === 401) {
+    if (shouldForceLogout(error)) {
       await AsyncStorage.multiRemove(['authToken', 'user']).catch(() => {});
       const reason = error.response?.data?.code ?? 'session_expired';
       emitForceLogout(reason);
     }
-    return Promise.reject(error.response?.data ?? error);
+    // Rejects with the response body plus `status` (see apiHelpers.shapeRejection / utils/apiError.parseApiError).
+    return Promise.reject(shapeRejection(error));
   }
 );
 
@@ -126,6 +129,31 @@ export const rideAPI = {
 // ─────────────────────────────────────────────────────────────────────────────
 // DELIVERY
 // ─────────────────────────────────────────────────────────────────────────────
+// Guest PLANNING only (public, preview): a real route + server-side signed estimates. It never creates a booking.
+// Body: { service:'RIDE'|'PARCEL', countryCode, pickup:{latitude,longitude}, destination:{latitude,longitude}, parcel?:{category,weightKg,longestSideCm} }
+export const guestAPI = {
+  config:       ()     => api.get('/guest/config'),
+  autocomplete: (data) => api.post('/guest/places/autocomplete', data),
+  placeDetails: (data) => api.post('/guest/places/details', data),
+  quote:        (data) => api.post('/guest/quote', data),
+  // M15: reverse geocode for map pin / current location, phone verification for guest booking.
+  reverse:      (data) => api.post('/guest/places/reverse', data),
+  requestOtp:   (data) => api.post('/guest/otp/request', data),
+  verifyOtp:    (data) => api.post('/guest/otp/verify', data),
+};
+// Guest-session calls use "Authorization: Guest <token>" (NOT the Bearer JWT) and a per-attempt Idempotency-Key.
+const guestHeaders = (session, extra = {}) => ({ headers: { Authorization: `Guest ${session}`, ...extra } });
+export const guestBookingAPI = {
+  create:   (session, key, data) => api.post('/guest/bookings', data, guestHeaders(session, { 'Idempotency-Key': key })),
+  list:     (session)            => api.get('/guest/bookings', guestHeaders(session)),
+  get:      (session, id)        => api.get(`/guest/bookings/${id}`, guestHeaders(session)),
+  cancel:   (session, id, reason) => api.post(`/guest/bookings/${id}/cancel`, { reason }, guestHeaders(session)),
+  rotateTracking: (session, id)  => api.post(`/guest/bookings/${id}/tracking/rotate`, {}, guestHeaders(session)),
+  revokeTracking: (session, id)  => api.post(`/guest/bookings/${id}/tracking/revoke`, {}, guestHeaders(session)),
+  convert:  (session, data)      => api.post('/guest/convert', data, guestHeaders(session)),
+  track:    (token)              => api.get(`/guest/track/${token}`),
+};
+
 export const deliveryAPI = {
   getEstimate:        (params)   => api.get('/deliveries/estimate', { params }),
   requestDelivery:    (data)     => api.post('/deliveries/request', data),
@@ -135,6 +163,10 @@ export const deliveryAPI = {
   pickupDelivery:     (id)       => api.put(`/deliveries/${id}/pickup`),
   startTransit:       (id)       => api.put(`/deliveries/${id}/transit`),
   completeDelivery:   (id, data) => api.put(`/deliveries/${id}/complete`, data),
+  // M15 proof of delivery (courier). Server: POST /deliveries/:id/proof | /failed | /returned
+  verifyProof:        (id, data) => api.post(`/deliveries/${id}/proof`, data),     // { code, photoUrl? }
+  failDelivery:       (id, data) => api.post(`/deliveries/${id}/failed`, data),    // { reason, note?, photoUrl? }
+  confirmReturned:    (id)       => api.post(`/deliveries/${id}/returned`, {}),
   cancelDelivery:     (id, data) => api.put(`/deliveries/${id}/cancel`, data),
   rateDelivery:       (id, data) => api.post(`/deliveries/${id}/rate`, data),
   getDeliveryHistory: (params)   => api.get('/deliveries/history', { params }),
@@ -261,6 +293,9 @@ export const paymentAPI = {
   initializeFlutterwave: (data)     => api.post('/payments/flutterwave/initialize', data),
   verifyFlutterwave:     (data)     => api.post('/payments/flutterwave/verify', data),
   initializeOrange:      (data)     => api.post('/payments/orange/initialize', data),
+  // MTN MoMo: needs an existing booking (rideId | deliveryId) and a per-attempt Idempotency-Key header.
+  initializeMomo:        (data, idempotencyKey) => api.post('/payments/momo/initialize', data, { headers: { 'Idempotency-Key': idempotencyKey } }),
+  verifyMomo:            (data)     => api.post('/payments/momo/verify', data),
   verifyOrange:          (data)     => api.post('/payments/orange/verify', data),
   payWithWallet:         (data)     => api.post('/payments/wallet', data),
   payWithCash:           (data)     => api.post('/payments/cash', data),
@@ -397,6 +432,14 @@ const uploadWithFallback = async (multipartUrl, fieldName, asset, folder) => {
 };
 
 export const uploadAPI = {
+  // M15: hand-over / failed-delivery photo, stored PRIVATELY. Returns a private reference to send as `photoUrl`
+  // (no public link exists; support opens it through the audited document-access endpoint). No public base64 fallback on purpose.
+  uploadPodPhoto: async (image) => {
+    const ref = extractUrl(await uploadSingle('/upload/delivery/pod-photo', 'proof', image));
+    if (!ref) throw new Error('Photo upload failed. Please try again.');
+    return ref;
+  },
+
   // ── Pre-existing driver document uploads ────────────────────────────────────
   uploadDriverLicense: (image) =>
     uploadSingle('/upload/driver/license', 'license', image),

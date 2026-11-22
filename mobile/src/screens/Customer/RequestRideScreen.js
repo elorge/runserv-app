@@ -18,6 +18,7 @@ import { rideAPI, walletAPI, placesAPI } from '../../services/api';
 import socketService          from '../../services/socket';
 
 import { useRadarPulse, ScanningBar, StepDots, LocationSearchModal } from '../../components/RideDeliveryShared';
+import MomoPayModal from '../../components/MomoPayModal';
 import { PaymentSelector, useCardPayment }                           from '../../components/PaymentSelector';
 import { PayerSelector, DEFAULT_PAYER, payerPayload }                       from '../../components/PayerSelector';
 import { handleOrgBookingError } from '../../utils/orgErrors';
@@ -258,6 +259,7 @@ export default function RequestRideScreen({ navigation }) {
   const [step,          setStep]          = useState(1);
   const [requesting,    setRequesting]    = useState(false);
   const [pendingRideId, setPendingRideId] = useState(null);
+  const [momoRideId, setMomoRideId] = useState(null);   // MTN MoMo is paid AFTER the booking exists
   const [rideAccepted,  setRideAccepted]  = useState(false);
   const [mapReady,      setMapReady]      = useState(false);
 
@@ -530,12 +532,13 @@ export default function RequestRideScreen({ navigation }) {
         dropoffAddress, dropoffLat: dropoffCoords.lat, dropoffLng: dropoffCoords.lng,
         driverId: selectedDriver.driverId,
         estimatedFare: selectedDriver.effectiveFare ?? fareEstimate,
-        paymentMethod: onOrg ? 'CASH' : paymentMethod,
+        paymentMethod: (onOrg || paymentMethod === 'MTN_MOMO') ? 'CASH' : paymentMethod,   // MoMo: booked as CASH, paid after booking
         transactionId: cardResult?.transactionId ?? null,
         ...payerPayload(payerChoice),
       });
       const rideId = res?.data?.ride?.id ?? res?.ride?.id;
       setPendingRideId(rideId);
+      if (rideId && !onOrg && paymentMethod === 'MTN_MOMO') setMomoRideId(rideId);
       if (rideId) socketService.joinRide(rideId);
       setStep(4);
       Animated.timing(sheetH, { toValue: SHEET_SNAP, duration: 300, useNativeDriver: false }).start();
@@ -846,6 +849,13 @@ const cancelPendingRide = async () => {
         onChangeText={searchPlaces} onSelect={selectPlace}
         onClose={closeSearchModal} onSwitchToPin={switchToMapPin}
         accentColor={accentColor} theme={theme}
+      />
+      <MomoPayModal
+        visible={!!momoRideId}
+        onClose={() => setMomoRideId(null)}
+        rideId={momoRideId}
+        amountLabel={formatMoney(selectedDriver?.effectiveFare ?? fareEstimate ?? 0)}
+        theme={theme}
       />
     </View>
   );

@@ -321,6 +321,8 @@ const getPaymentConfigForCountry = async (code = 'NG') => {
     // MANUAL = free-text destination that an admin pays by hand.
     payoutStyle:    RAIL_STYLE[payoutRails(country)[0]],
     orangeReady:    orange.isOrangeConfigured(),
+    // Methods from the multi-provider layer that the backend has confirmed are enabled AND eligible (empty until then).
+    extraMethods:   await require('./payments/providerConfig.service').extraMethodsFor(country.code, country.currencyCode),
     // Where maps open until GPS answers. null only for a market with no centre set.
     mapCenter,
   };

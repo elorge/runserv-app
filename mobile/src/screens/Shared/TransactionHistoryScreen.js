@@ -88,7 +88,6 @@ const DatePickerModal = ({ visible, value, onChange, onClose, theme, accent, lab
         <View style={dp.overlay}>
           <View style={[dp.centeredCard, { backgroundColor: theme.backgroundAlt, borderColor: theme.border }]}>
             <Text style={[dp.title, { color: theme.foreground }]}>{label}</Text>
-            {/* eslint-disable-next-line react-native/no-raw-text */}
             <input
               type="date"
               value={local.toISOString().split('T')[0]}

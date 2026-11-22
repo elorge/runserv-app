@@ -12,6 +12,8 @@ const { getCurrencyForUserId, getCountryForUser } = require('../services/country
 const { formatMoney } = require('../utils/currency');
 const { paymentSplit } = require('../services/paymentSplit.service');
 const { applyTransferResult } = require('../services/payoutSettlement.service');
+const providerConfig = require('../services/payments/providerConfig.service');
+const collection = require('../services/payments/collection.service');
 
 const safeSendEmail = async (fn, label) => {
   try {
@@ -43,6 +45,7 @@ exports.paystackInitialize = async (req, res) => {
   const chargeCurrency = await getCurrencyForUserId(userId);
   const country = await getCountryForUser(req.user);
   assertProviderSupported(country, 'paystack');
+  await providerConfig.assertNotKilled(country.code, 'paystack'); // Admin kill switch (no config row = unchanged behaviour)
 
   const transaction = await paymentService.paystackInitialize({
     email,
@@ -213,6 +216,7 @@ exports.flutterwaveInitialize = async (req, res) => {
   const chargeCurrency = await getCurrencyForUserId(userId);
   const country = await getCountryForUser(req.user);
   assertProviderSupported(country, 'flutterwave');
+  await providerConfig.assertNotKilled(country.code, 'flutterwave'); // Admin kill switch (no config row = unchanged behaviour)
 
   const transaction = await paymentService.flutterwaveInitialize({
     email,
@@ -383,6 +387,7 @@ exports.orangeInitialize = async (req, res) => {
 
   const country = await getCountryForUser(req.user);
   assertProviderSupported(country, 'orange');
+  await providerConfig.assertNotKilled(country.code, 'orange'); // Admin kill switch (no config row = unchanged behaviour)
 
   if (!orangeService.isOrangeConfigured()) {
     throw new AppError('Orange Money is not activated yet. Please use another payment method.', 503);
@@ -927,3 +932,30 @@ exports.getStats = async (req, res) => {
 };
 
 module.exports = exports;
+
+// ─────────────────────────────────────────────
+// MTN MoMo (multi-provider layer — disabled unless Admin enables it AND every gate passes)
+// ─────────────────────────────────────────────
+exports.momoInitialize = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+  const { amount, rideId, deliveryId, phone } = req.body;
+  const out = await collection.initiate({ user: req.user, amount, rideId, deliveryId, phone, idempotencyKey: req.get('Idempotency-Key') });
+  res.status(out.replay ? 200 : 202).json({ success: true, data: out });
+};
+
+exports.momoVerify = async (req, res) => {
+  const r = await collection.verifyForUser({ user: req.user, reference: req.body?.reference, paymentId: req.body?.paymentId });
+  const code = r.status === 'PENDING' ? 202 : 200;
+  res.status(code).json({ success: r.status === 'COMPLETED', pending: r.status === 'PENDING', data: { status: r.status, payment: r.payment && { id: r.payment.id, status: r.payment.status, reference: r.payment.transactionId } } });
+};
+
+exports.momoWebhook = async (req, res) => {
+  try {
+    const r = await collection.handleWebhook({ referenceId: req.params.ref, token: req.params.sig, body: req.body });
+    return res.sendStatus(r.code);
+  } catch (err) {
+    console.error('[payment.controller] MoMo webhook failed:', err.message);
+    return res.sendStatus(500); // lets the provider retry; settle() is idempotent
+  }
+};

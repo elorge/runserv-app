@@ -48,6 +48,7 @@ const authenticate = async (req, res, next) => {
           // phone dial code…) reads req.user.countryCode. Without it they all
           // silently fell back to Nigeria for every non-Nigerian user.
           countryCode: true,
+          authProvider: true,
           passwordChangedAt: true,
           mfaEnabled: true,
         },
@@ -55,6 +56,8 @@ const authenticate = async (req, res, next) => {
 
 if (!user)          return res.status(401).json({ success: false, message: 'Invalid token. User not found.' });
     if (!user.isActive) return res.status(403).json({ success: false, message: 'Account is deactivated.' });
+    // M15: a guest identity has a backing User row but must never reach an authenticated route (it acts only via a GuestSession).
+    if (user.authProvider === 'GUEST') return res.status(403).json({ success: false, code: 'GUEST_NOT_ALLOWED', message: 'Please create an account or sign in to use this.' });
     if (user.isSuspended) return res.status(403).json({ success: false, message: 'Account is suspended. Contact support.' });
 
     if (user.passwordChangedAt) {

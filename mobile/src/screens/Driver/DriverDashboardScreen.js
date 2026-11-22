@@ -18,6 +18,7 @@ import { useCurrency }                         from '../../context/CurrencyConte
 import { useTranslation }                      from 'react-i18next';
 import { driverAPI, userAPI, walletAPI, rideAPI } from '../../services/api';
 import DispatchStatusBanner from '../../components/DispatchStatusBanner';
+import RoadCardHost from '../../components/earn/RoadCardHost';
 import socketService                           from '../../services/socket';
 import liveLocation                            from '../../services/liveLocation';
 import LocationSharingRow                      from '../../components/LocationSharingRow';
@@ -281,6 +282,7 @@ export default function DriverDashboardScreen({ navigation }) {
   const [isOnline,          setIsOnline]          = useState(false);
   const [toggling,          setToggling]          = useState(false);
   const [profile,           setProfile]           = useState(null);
+  const [profileKnown,      setProfileKnown]      = useState(false); // true once the profile request has really answered (404 = no profile yet)
   const [stats,             setStats]             = useState(null);
   const [walletBalance,     setWalletBalance]     = useState(null);
   const [todayEarnings,     setTodayEarnings]     = useState(0);
@@ -335,8 +337,13 @@ export default function DriverDashboardScreen({ navigation }) {
         rideAPI.getActiveRide(),
       ]);
 
+      if (profileRes.status === 'rejected') {
+        const er = profileRes.reason;
+        if (er?.statusCode === 404 || er?.status === 404 || er?.response?.status === 404 || /not found/i.test(er?.message || '')) { setProfile(null); setProfileKnown(true); }
+      }
       if (profileRes.status === 'fulfilled') {
         const p = profileRes.value?.data?.profile ?? profileRes.value?.profile ?? null;
+        setProfileKnown(true);
         setProfile(p);
         setIsOnline(p?.isOnline ?? false);
         const floor = p?.preferredFloorPrice ?? 0;
@@ -593,8 +600,11 @@ export default function DriverDashboardScreen({ navigation }) {
               </View>
             </View>
 
+            {/* Road to online replaces the two banners below once the profile is known; they stay as the offline fallback. */}
+            {!loading && <RoadCardHost role="DRIVER" profile={profile} known={profileKnown} theme={theme} navigation={navigation} />}
+
             {/* Rejected banner */}
-            {isRejected && !loading && (
+            {!profileKnown && isRejected && !loading && (
               <TouchableOpacity style={[s.alertBanner, { backgroundColor: '#E0555510', borderColor: '#E05555' }]} onPress={goToDocuments} activeOpacity={0.85}>
                 <Ionicons name="cloud-upload-outline" size={18} color="#E05555" />
                 <View style={{ flex: 1 }}>
@@ -606,7 +616,7 @@ export default function DriverDashboardScreen({ navigation }) {
             )}
 
             {/* Pending banner */}
-            {!isApproved && !isRejected && !loading && (
+            {!profileKnown && !isApproved && !isRejected && !loading && (
               <TouchableOpacity style={[s.alertBanner, { backgroundColor: inputBg, borderColor: inputBorder }]} onPress={goToDocuments} activeOpacity={0.85}>
                 <Ionicons name="cloud-upload-outline" size={18} color={theme.hint} />
                 <View style={{ flex: 1 }}>

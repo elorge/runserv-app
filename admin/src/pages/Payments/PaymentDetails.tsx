@@ -24,6 +24,11 @@ interface Payment {
   provider?: string | null;
   status: string;
   transactionId?: string;
+  providerRef?: string | null;
+  providerStatus?: string | null;
+  verifiedAmount?: number | string | null;
+  verifiedCurrency?: string | null;
+  settledAt?: string | null;
   rideId?: string;
   deliveryId?: string;
   platformFee?: number;
@@ -38,7 +43,7 @@ interface Payment {
 const fmt = (n: number, currency?: string | null) => formatMoney(n, currency, { decimals: 2 });
 
 const PROVIDER_LABEL: Record<string, string> = {
-  paystack: 'Paystack', flutterwave: 'Flutterwave', orange: 'Orange Money',
+  paystack: 'Paystack', flutterwave: 'Flutterwave', orange: 'Orange Money', mtn_momo: 'MTN MoMo',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -46,6 +51,11 @@ const STATUS_STYLE: Record<string, string> = {
   PENDING:   'bg-yellow-100 text-yellow-800 border-yellow-200',
   FAILED:    'bg-red-100 text-red-800 border-red-200',
   REFUNDED:  'bg-purple-100 text-purple-800 border-purple-200',
+  REVIEW_REQUIRED:    'bg-orange-100 text-orange-800 border-orange-300',
+  CANCELLED:          'bg-gray-100 text-gray-700 border-gray-200',
+  EXPIRED:            'bg-gray-100 text-gray-700 border-gray-200',
+  REFUND_PENDING:     'bg-purple-50 text-purple-700 border-purple-200',
+  PARTIALLY_REFUNDED: 'bg-purple-100 text-purple-800 border-purple-200',
 };
 
 const METHOD_ICON: Record<string, React.ReactNode> = {
@@ -137,7 +147,7 @@ const PaymentDetails: React.FC = () => {
           {payment.status === 'PENDING'   && <Clock       className="w-3.5 h-3.5" />}
           {payment.status === 'FAILED'    && <XCircle     className="w-3.5 h-3.5" />}
           {payment.status === 'REFUNDED'  && <RefreshCw   className="w-3.5 h-3.5" />}
-          {payment.status}
+          {payment.status.replace(/_/g, ' ')}
         </span>
       </div>
 
@@ -169,6 +179,24 @@ const PaymentDetails: React.FC = () => {
             <div className="text-xs text-gray-400 font-semibold uppercase mb-1">Transaction ID</div>
             <div className="text-sm font-mono text-gray-700">{payment.transactionId || '—'}</div>
           </div>
+          {payment.providerRef && (
+            <div>
+              <div className="text-xs text-gray-400 font-semibold uppercase mb-1">Provider reference</div>
+              <div className="text-sm font-mono text-gray-700 break-all">{payment.providerRef}</div>
+            </div>
+          )}
+          {payment.verifiedAmount != null && (
+            <div>
+              <div className="text-xs text-gray-400 font-semibold uppercase mb-1">Provider-verified amount</div>
+              <div className="text-sm font-mono text-gray-700">{String(payment.verifiedAmount)} {payment.verifiedCurrency || ''}</div>
+            </div>
+          )}
+          {payment.settledAt && (
+            <div>
+              <div className="text-xs text-gray-400 font-semibold uppercase mb-1">Settled at</div>
+              <div className="text-sm text-gray-700">{new Date(payment.settledAt).toLocaleString()}</div>
+            </div>
+          )}
           <div>
             <div className="text-xs text-gray-400 font-semibold uppercase mb-1">Platform Fee</div>
             <div className="text-sm font-semibold text-indigo-700">

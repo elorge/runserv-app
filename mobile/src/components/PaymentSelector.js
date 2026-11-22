@@ -75,6 +75,18 @@ const OrangeMark = ({ size = 18, style }) => (
   </Svg>
 );
 
+// ── MTN MoMo (server-confirmed extra method) ────────────────────────────────
+// Shown ONLY when the backend lists it in config.extraMethods (Admin enabled + every gate passed). Unlike the card methods it
+// is paid AFTER the booking exists (the server takes the amount from the booking); the booking itself is stored as CASH until
+// the payment completes, and the trip completion honours an already-completed MoMo payment.
+const MomoMark = ({ size = 18 }) => (
+  <Svg width={size} height={size} viewBox="0 0 100 100">
+    <Path d="M0 0h100v100H0z" fill="#FFCC00" />
+    <Path d="M18 70V30h12l20 26 20-26h12v40H70V50L50 76 30 50v20z" fill="#111" />
+  </Svg>
+);
+const MOMO_METHOD = { id: 'MTN_MOMO', label: 'MTN MoMo', sub: 'Approve on your phone', icon: null, Mark: MomoMark, color: '#E0A800', timing: 'Pay after booking' };
+
 // ── Method config ─────────────────────────────────────────────────────────────
 // This is the catalogue of everything the app CAN render. What a given user
 // actually sees is decided server-side by their country's creditMethods —
@@ -130,6 +142,7 @@ const BY_ID = Object.fromEntries(METHODS.map(m => [m.id, m]));
 // Methods that take the customer out to a hosted checkout and charge up
 // front, as opposed to CASH/WALLET which settle at trip completion.
 const UPFRONT = ['PAYSTACK', 'FLUTTERWAVE', 'ORANGE_MONEY'];
+// Paid after the booking exists, so it sits with the pay-later options.
 
 // ── PaymentSelector component ─────────────────────────────────────────────────
 export const PaymentSelector = ({
@@ -142,13 +155,15 @@ export const PaymentSelector = ({
   accentColor,
 }) => {
   const { formatMoney } = useCurrency();
-  const { creditMethods, defaultMethod, loading: loadingConfig } = useCountryConfig();
+  const { creditMethods, defaultMethod, loading: loadingConfig, supportsExtra } = useCountryConfig();
+  const momoOffered = !!supportsExtra?.('MTN_MOMO');
 
   // Only render what this user's country can actually settle. An Orange
   // market never sees Paystack; Nigeria never sees Orange Money.
   const visible = creditMethods
     .map(id => BY_ID[id])
     .filter(Boolean);
+  if (momoOffered) visible.push(MOMO_METHOD);
 
   const payLater = visible.filter(m => !UPFRONT.includes(m.id));
   const payNow   = visible.filter(m =>  UPFRONT.includes(m.id));
@@ -159,8 +174,8 @@ export const PaymentSelector = ({
   // a state that will fail at submit.
   useEffect(() => {
     if (loadingConfig || !visible.length) return;
-    if (!creditMethods.includes(value)) onChange(defaultMethod);
-  }, [loadingConfig, creditMethods, value, defaultMethod, onChange, visible.length]);
+    if (!creditMethods.includes(value) && !(value === 'MTN_MOMO' && momoOffered)) onChange(defaultMethod);
+  }, [loadingConfig, creditMethods, value, defaultMethod, onChange, visible.length, momoOffered]);
 
   const walletInsufficient = value === 'WALLET' && walletBalance !== null && walletBalance < fare;
 
@@ -245,6 +260,13 @@ export const PaymentSelector = ({
         <View style={ps.row} key={`now-${i}`}>{row.map(renderOption)}</View>
       ))}
 
+      {value === 'MTN_MOMO' && (
+        <View style={[ps.timingNote, { backgroundColor: '#E0A800' + '14', borderColor: '#E0A800' + '40' }]}>
+          <Ionicons name="information-circle-outline" size={13} color="#E0A800" />
+          <Text style={[ps.timingNoteTxt, { color: '#E0A800' }]}>After you book, we'll ask for your MTN number and send a prompt to approve on your phone.</Text>
+        </View>
+      )}
+
       {UPFRONT.includes(value) && (
         <View style={[ps.timingNote, { backgroundColor: '#0092F5' + '14', borderColor: '#0092F5' + '40' }]}>
           <Ionicons name="information-circle-outline" size={13} color="#0092F5" />
@@ -293,7 +315,7 @@ export const useCardPayment = () => {
   const { config } = useCountryConfig();
 
   const handleCardPayment = async (method, fare) => {
-    if (method === 'CASH' || method === 'WALLET') return null;
+    if (method === 'CASH' || method === 'WALLET' || method === 'MTN_MOMO') return null;   // MoMo is paid after booking (MomoPayModal)
     if (method === 'PAYSTACK')     return _handlePaystack(fare, formatMoney);
     if (method === 'FLUTTERWAVE')  return _handleFlutterwave(fare, formatMoney);
     if (method === 'ORANGE_MONEY') return _handleOrange(fare, formatMoney, config);

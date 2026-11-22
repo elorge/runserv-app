@@ -6,14 +6,16 @@
 'use strict';
 const { DOC_URL_FIELDS, PRIVATE_MARKER } = require('../utils/storageRef');
 
-const FIELDS = new Set(DOC_URL_FIELDS);
+const FIELDS = new Set([...DOC_URL_FIELDS, 'podPhotoUrl']);   // M15: proof-of-delivery photo evidence is private too
+// M15: never serialised at all (the keyed hash of a hand-over code must not reach any client, even a courier or an admin).
+const HIDDEN = new Set(['podCodeHash']);
 const isPlain = (v) => v !== null && typeof v === 'object' && (Array.isArray(v) || Object.getPrototypeOf(v) === Object.prototype);
 
 const scrub = (v) => {
   if (Array.isArray(v)) return v.map(scrub);
   if (!isPlain(v)) return v;
   const out = {};
-  for (const [k, val] of Object.entries(v)) out[k] = FIELDS.has(k) && typeof val === 'string' && val ? PRIVATE_MARKER : scrub(val);
+  for (const [k, val] of Object.entries(v)) { if (HIDDEN.has(k)) continue; out[k] = FIELDS.has(k) && typeof val === 'string' && val ? PRIVATE_MARKER : scrub(val); }
   return out;
 };
 

@@ -36,7 +36,7 @@ const VEHICLE_SUB_TYPES = {
 //  Document slots — returned based on vehicle type
 //  uploadKey maps to the uploadAPI function to call
 // ─────────────────────────────────────────────────────────────────────────────
-const getDocSlots = (vehicleType, t) => {
+export const getDocSlots = (vehicleType, t) => {
   // Universal docs every driver must submit
   const base = [
     {

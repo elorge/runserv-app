@@ -138,7 +138,7 @@ const globalLimiter = rateLimit({
 });
 // Bank callbacks come from a bank's few server addresses and are protected by HMAC + their own limiter, so they are not
 // counted in the shared per-IP budget (a busy bank must never be throttled into missing a payment notice).
-app.use('/api/', (req, res, next) => (req.path.startsWith('/bank-webhooks/') ? next() : globalLimiter(req, res, next)));
+app.use('/api/', (req, res, next) => ((req.path.startsWith('/bank-webhooks/') || req.path.startsWith('/email-webhooks/') || req.path.startsWith('/payments/momo/webhook/')) ? next() : globalLimiter(req, res, next)));
 
 const statusLimiter = rateLimit({
   windowMs: 60 * 1000,   // 1 minute
@@ -174,6 +174,8 @@ if (ENABLE_BANK_OFFERS) {
   // Bank callbacks are HMAC-signed over the raw body, so it must not be re-parsed.
   app.use('/api/bank-webhooks', express.raw({ type: '*/*', limit: '256kb' }), (req, _res, next) => { req.rawBody = req.body; next(); });
 }
+// M16.1: email provider webhooks (Brevo token, Resend/Svix signature over the exact bytes).
+app.use('/api/email-webhooks', express.raw({ type: '*/*', limit: '256kb' }), (req, _res, next) => { req.rawBody = req.body; next(); });
 app.use(
   '/api/wallet/topup/verify',
   express.raw({ type: 'application/json' }),
@@ -197,11 +199,11 @@ const RAW_BODY_ROUTES = [
 ];
 
 app.use((req, res, next) => {
-  if (RAW_BODY_ROUTES.includes(req.path) || req.path.startsWith('/api/bank-webhooks/')) return next();
+  if (RAW_BODY_ROUTES.includes(req.path) || req.path.startsWith('/api/bank-webhooks/') || req.path.startsWith('/api/email-webhooks/')) return next();
   express.json({ limit: '10mb' })(req, res, next);
 });
 app.use((req, res, next) => {
-  if (RAW_BODY_ROUTES.includes(req.path) || req.path.startsWith('/api/bank-webhooks/')) return next();
+  if (RAW_BODY_ROUTES.includes(req.path) || req.path.startsWith('/api/bank-webhooks/') || req.path.startsWith('/api/email-webhooks/')) return next();
   express.urlencoded({ extended: true, limit: '10mb' })(req, res, next);
 });
 
@@ -267,6 +269,8 @@ app.use(maintenanceMiddleware);
 // M13: no response ever carries a raw document link (see middleware/scrubDocumentUrls.js)
 app.use('/api', require('./middleware/scrubDocumentUrls').scrubDocumentUrls);
 app.use('/api/documents',     require('./routes/document.routes'));
+app.use('/t',                 require('./routes/guestTrackPage.routes')); // M15: page behind the SMS tracking link (set GUEST_TRACKING_BASE_URL=https://<api-host>/t)
+app.use('/api/guest',         require('./routes/guest.routes')); // public PREVIEW quotes (GUEST_PLANNING_ENABLED) + verified guest booking (GUEST_BOOKING_ENABLED); authenticated routes unchanged
 app.use('/api/maps',          require('./routes/maps.routes')); // M14: provider-neutral routing
 app.use('/api/auth',          authRoutes);
 app.use('/api/users',         userRoutes);
@@ -283,6 +287,7 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/places',        placesRoutes); 
 app.use('/api/countries',     countriesRoutes);
 
+app.use('/api/email-webhooks', require('./routes/emailWebhook.routes'));   // M16.1: Brevo / Resend delivery events (authenticated inside)
 if (ENABLE_CORPORATE) app.use('/api/corporate', corporateRoutes);
 if (ENABLE_FLEET)     app.use('/api/fleet', require('./routes/fleet.routes'));
 if (ENABLE_BANK_OFFERS) {

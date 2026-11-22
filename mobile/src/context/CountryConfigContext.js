@@ -34,6 +34,7 @@ const FALLBACK_CONFIG = {
   payoutStyle:    'BANK',
   payoutRails:    ['BANK'],
   orangeReady:    false,
+  extraMethods:   [],
   mapCenter:      { lat: 6.5244, lng: 3.3792, city: 'Lagos' },
 };
 
@@ -70,6 +71,9 @@ export const CountryConfigProvider = ({ children }) => {
 
   // ── Derived helpers the screens actually consume ──────────────────────────
   const supports      = useCallback((method) => config.creditMethods.includes(method), [config]);
+  // Server-confirmed extra methods (e.g. MTN MoMo). Empty unless the Admin enabled it AND every gate passed for this market.
+  const extraMethods   = config.extraMethods ?? [];
+  const supportsExtra  = useCallback((key) => (config.extraMethods ?? []).some(m => m.key === key), [config]);
   const isOrangeMarket = config.providers.includes('orange');
   const isMobileMoneyPayout = config.payoutStyle === 'MOBILE_MONEY';
 
@@ -81,6 +85,8 @@ export const CountryConfigProvider = ({ children }) => {
         error,
         refresh,
         supports,
+        extraMethods,
+        supportsExtra,
         isOrangeMarket,
         isMobileMoneyPayout,
         creditMethods: config.creditMethods,

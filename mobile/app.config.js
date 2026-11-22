@@ -63,7 +63,7 @@ module.exports = {
     plugins: [
       [
         'expo-image-picker',
-        { photosPermission: 'Allow Runserv to access your photos.', cameraPermission: 'Allow Runserv to use your camera to take a profile photo.' },
+        { photosPermission: 'Allow Runserv to access your photos.', cameraPermission: 'Allow Runserv to use your camera to take profile photos and proof-of-delivery photos.' },
       ],
       [
         'expo-font',

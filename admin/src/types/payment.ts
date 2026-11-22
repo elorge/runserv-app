@@ -14,7 +14,7 @@ export interface Payment {
   amount: number;
   currency: string;
   method: PaymentMethod;
-  /** Gateway that took the money: 'paystack' | 'flutterwave' | 'orange' (null for cash/wallet). */
+  /** Gateway that took the money: 'paystack' | 'flutterwave' | 'orange' | 'mtn_momo' (null for cash/wallet). */
   provider?: PaymentProvider | null;
   status: PaymentStatus;
   transactionId?: string;
@@ -37,6 +37,11 @@ export enum PaymentStatus {
   COMPLETED = 'COMPLETED',
   FAILED = 'FAILED',
   REFUNDED = 'REFUNDED',
+  CANCELLED = 'CANCELLED',
+  EXPIRED = 'EXPIRED',
+  REFUND_PENDING = 'REFUND_PENDING',
+  PARTIALLY_REFUNDED = 'PARTIALLY_REFUNDED',
+  REVIEW_REQUIRED = 'REVIEW_REQUIRED',
 }
 
 export interface RefundRequest {

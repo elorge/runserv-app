@@ -18,19 +18,21 @@ const STATUS_LABEL_KEYS = {
 
 export default function ActiveRideBanner({ ride, role = 'CUSTOMER', onPress, onCancel, theme }) {
   const { t } = useTranslation();
-  if (!ride) return null;
-
-  const cfg    = STATUS_LABEL_KEYS[ride.status] ?? STATUS_LABEL_KEYS.ACCEPTED;
+  // Hooks first, early return after: hook order must not depend on props.
+  const cfg    = STATUS_LABEL_KEYS[ride?.status] ?? STATUS_LABEL_KEYS.ACCEPTED;
   const pulseA = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
+    if (!ride) return undefined;
     const loop = Animated.loop(Animated.sequence([
       Animated.timing(pulseA, { toValue: 0.5, duration: 700, useNativeDriver: true }),
       Animated.timing(pulseA, { toValue: 1,   duration: 700, useNativeDriver: true }),
     ]));
     loop.start();
     return () => loop.stop();
-  }, []);
+  }, [!!ride]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!ride) return null;
 
   const canCancel = role === 'CUSTOMER' && ride.status === 'REQUESTED';
 

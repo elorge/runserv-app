@@ -17,6 +17,7 @@ import FloorPriceScreen from '../screens/Driver/FloorPriceScreen';
 import DriverHistoryScreen from '../screens/Driver/DriverHistoryScreen';
 import EarningsScreen from '../screens/Driver/EarningsScreen';
 import DriverDocumentsScreen from '../screens/Driver/DriverDocumentsScreen';
+import RoadToOnlineScreen from '../screens/Shared/RoadToOnlineScreen';
 import WalletTopUpScreen from '../screens/Shared/WalletTopUpScreen';
 import WithdrawalScreen from '../screens/Shared/WithdrawalScreen';
 import ProfileScreen from '../screens/Shared/ProfileScreen';
@@ -51,6 +52,7 @@ const DashboardStack = () => (
     <Stack.Screen name="FloorPrice"        component={FloorPriceScreen}        />
     <Stack.Screen name="Notifications"     component={NotificationsScreen}     />
     <Stack.Screen name="DriverDocuments"   component={DriverDocumentsScreen}   />
+    <Stack.Screen name="RoadToOnline"      component={RoadToOnlineScreen}      />
     <Stack.Screen name="DispatchStatus"    component={DispatchStatusScreen}    />
     <Stack.Screen name="LocationSharing"  component={LocationSharingScreen}  />
     <Stack.Screen name="DriverHistory"     component={DriverHistoryScreen}     />

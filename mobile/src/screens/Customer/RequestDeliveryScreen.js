@@ -20,6 +20,7 @@ import socketService              from '../../services/socket';
 
 // ── Shared components ─────────────────────────────────────────────────────────
 import { useRadarPulse, ScanningBar, StepDots, LocationSearchModal } from '../../components/RideDeliveryShared';
+import MomoPayModal from '../../components/MomoPayModal';
 import { PaymentSelector, useCardPayment }                           from '../../components/PaymentSelector';
 import { PayerSelector, DEFAULT_PAYER, payerPayload }                       from '../../components/PayerSelector';
 import { handleOrgBookingError } from '../../utils/orgErrors';
@@ -244,6 +245,7 @@ export default function RequestDeliveryScreen({ navigation }) {
   const [step,              setStep]              = useState(1);
   const [requesting,        setRequesting]        = useState(false);
   const [pendingDeliveryId, setPendingDeliveryId] = useState(null);
+  const [momoDeliveryId, setMomoDeliveryId] = useState(null);   // MTN MoMo is paid AFTER the booking exists
   const [mapReady,          setMapReady]          = useState(false);
 
   const sheetH    = useRef(new Animated.Value(SHEET_SNAP)).current;
@@ -521,12 +523,13 @@ export default function RequestDeliveryScreen({ navigation }) {
         packageDescription, packageWeight: parseFloat(packageWeight) || 0,
         notes: packageNotes, estimatedFee: feeEstimate,
         partnerId: selectedPartner.partnerId,
-        paymentMethod: onOrg ? 'CASH' : paymentMethod,
+        paymentMethod: (onOrg || paymentMethod === 'MTN_MOMO') ? 'CASH' : paymentMethod,   // MoMo: booked as CASH, paid after booking
         transactionId: cardResult?.transactionId ?? null,
         ...payerPayload(payerChoice),
       });
       const newDeliveryId = res?.data?.delivery?.id ?? res?.data?.id ?? null;
       setPendingDeliveryId(newDeliveryId);
+      if (newDeliveryId && !onOrg && paymentMethod === 'MTN_MOMO') setMomoDeliveryId(newDeliveryId);
       if (newDeliveryId) socketService.joinRide(newDeliveryId);
       setStep(4);
     } catch (err) {
@@ -898,6 +901,13 @@ export default function RequestDeliveryScreen({ navigation }) {
         onChangeText={searchPlaces} onSelect={selectPlace}
         onClose={closeSearchModal} onSwitchToPin={switchToMapPin}
         accentColor={accentColor} theme={theme}
+      />
+      <MomoPayModal
+        visible={!!momoDeliveryId}
+        onClose={() => setMomoDeliveryId(null)}
+        deliveryId={momoDeliveryId}
+        amountLabel={formatMoney(feeEstimate ?? 0)}
+        theme={theme}
       />
     </View>
   );

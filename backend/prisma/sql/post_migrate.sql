@@ -80,3 +80,11 @@ BEGIN
     EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM authenticated';
   END IF;
 END $$;
+
+-- ── Multi-provider payments: PaymentEvent is an append-only evidence trail (like LedgerEntry). Correct with a NEW event. ──
+CREATE OR REPLACE FUNCTION payment_event_block_change() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'PaymentEvent is append-only'; END; $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS payment_event_no_update ON "PaymentEvent";
+DROP TRIGGER IF EXISTS payment_event_no_truncate ON "PaymentEvent";
+CREATE TRIGGER payment_event_no_update   BEFORE UPDATE OR DELETE ON "PaymentEvent" FOR EACH ROW       EXECUTE FUNCTION payment_event_block_change();
+CREATE TRIGGER payment_event_no_truncate BEFORE TRUNCATE         ON "PaymentEvent" FOR EACH STATEMENT EXECUTE FUNCTION payment_event_block_change();

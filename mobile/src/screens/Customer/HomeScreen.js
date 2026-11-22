@@ -25,6 +25,7 @@ import ActiveRideBanner      from '../../components/ActiveRideBanner';
 import ActiveDeliveryBanner  from '../../components/ActiveDeliveryBanner';
 import MaintenanceBanner     from '../../components/MaintenanceBanner';
 import OffersEntryCard       from '../../components/OffersEntryCard';
+import ResumeTripCard        from '../../components/ResumeTripCard';
 import LanguageToggle        from '../../components/LanguageToggle';
 import { checkMaintenance }  from '../../utils/maintenanceCheck';
 import { useInactivityLogout } from '../../hooks/useInactivityLogout';
@@ -673,6 +674,9 @@ export default function HomeScreen({ navigation }) {
               onCancel={activeDelivery.status === 'PENDING' ? handleCancelDelivery : undefined}
             />
           )}
+
+          {/* Trip planned before sign-up (Boarding Pass): offer to continue it */}
+          {!activeRide && !activeDelivery && <ResumeTripCard navigation={navigation} />}
 
           {/* Service icons + search bar */}
           <View style={{ paddingHorizontal: H_PAD }}>

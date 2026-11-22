@@ -128,6 +128,11 @@ exports.uploadPartnerVehicle = async (req, res) => {
  * @route   POST /api/upload/delivery/proof
  * @access  Private (DELIVERY_PARTNER)
  */
+exports.uploadPodPhoto = async (req, res) => {
+  if (!req.privateFile) throw new AppError('No file uploaded', 400);
+  res.status(200).json({ success: true, message: 'Photo uploaded', data: { url: req.privateFile.ref, private: true, publicId: req.privateFile.publicId } });
+};
+
 exports.uploadDeliveryProof = async (req, res) => {
   if (!req.file) {
     throw new AppError('No file uploaded', 400);
