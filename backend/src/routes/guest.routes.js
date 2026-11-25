@@ -78,6 +78,7 @@ router.post('/bookings', ...sess, limited(10, 60 * 1000, 'bookings'), [
   body('destination.latitude').isFloat({ min: -90, max: 90 }), body('destination.longitude').isFloat({ min: -180, max: 180 }), body('destination.address').isString().trim().isLength({ min: 2, max: 200 }),
   body('contactName').optional().isString().isLength({ max: 40 }), body('notes').optional().isString().isLength({ max: 300 }),
   body('parcel').optional().isObject(),
+  body('parcel.recipientEmail').optional({ nullable: true, checkFalsy: true }).isString().trim().isLength({ max: 254 }).isEmail().withMessage('Enter a valid recipient email address.'),   // WP-07: shape here; the REQUIRED rule (channel dependent) is enforced once, in guestBooking.service via deliveryComms.recipientEmailRequired
 ], validate, gb.create);
 router.get('/bookings', ...sess, limited(30, 60 * 1000, 'bookings/list'), gb.list);
 router.get('/bookings/:id', ...sess, limited(60, 60 * 1000, 'bookings/get'), gb.get);

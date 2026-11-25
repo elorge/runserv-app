@@ -50,6 +50,7 @@ const authenticate = async (req, res, next) => {
           countryCode: true,
           authProvider: true,
           passwordChangedAt: true,
+          sessionsRevokedAt: true,
           mfaEnabled: true,
         },
       });
@@ -67,9 +68,17 @@ if (!user)          return res.status(401).json({ success: false, message: 'Inva
       }
     }
 
+    // WP-03: "log out everywhere" and single-token logout.
+    if (require('../services/tokenRevocation.service').issuedBeforeRevocation(decoded, user.sessionsRevokedAt)) {
+      return res.status(401).json({ success: false, message: 'Session ended. Please log in again.' });
+    }
+    if (await require('../services/tokenRevocation.service').isRevoked(token, decoded)) {
+      return res.status(401).json({ success: false, message: 'Session ended. Please log in again.' });
+    }
+
     // Staff need a token that passed the second step. A password-only token (every sign-in route issues one, including
     // OTP and social sign-in) may only reach the two-step routes, so no sign-in path can skip it.
-    if (['ADMIN', 'SUPER_ADMIN', 'MODERATOR', 'SUPPORT'].includes(user.role) && (user.mfaEnabled || process.env.REQUIRE_STAFF_MFA === 'true') && !decoded.mfa) {
+    if (['ADMIN', 'SUPER_ADMIN', 'MODERATOR', 'SUPPORT'].includes(user.role) && (user.mfaEnabled || require('../utils/flags').isTrue(process.env.REQUIRE_STAFF_MFA)) && !decoded.mfa) {
       const url = `${req.baseUrl || ''}${req.path || ''}`;
       if (!/\/auth\/mfa(\/|$)/.test(url)) {
         return res.status(401).json({ success: false, code: 'MFA_REQUIRED', mfaEnrolled: !!user.mfaEnabled, message: user.mfaEnabled ? 'Enter your authenticator code to continue.' : 'Set up two-step sign-in to continue.' });
@@ -77,6 +86,7 @@ if (!user)          return res.status(401).json({ success: false, message: 'Inva
     }
 
     req.user = user;
+    req.rawToken = token; req.tokenClaims = decoded;
     req.tokenMfa = !!decoded.mfa;
     next();
   } catch (err) {

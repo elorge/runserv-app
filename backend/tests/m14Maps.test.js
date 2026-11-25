@@ -151,7 +151,7 @@ describe('PRODUCTION behaviour (NODE_ENV unset or production = production)', () 
 
 describe('boot guard (production)', () => {
   const g = require('../src/utils/envGuard');
-  const base = { NODE_ENV: 'production', JWT_SECRET: 'q'.repeat(48), DATABASE_URL: 'x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's' };
+  const base = { NODE_ENV: 'production', REQUIRE_STAFF_MFA: 'true', MFA_ENCRYPTION_KEY: 'm'.repeat(32), JWT_SECRET: 'q'.repeat(48), DATABASE_URL: 'x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's' };
   test('refuses to start without a real routing provider or document storage', () => {
     const p = g.productionProblems({ ...base, CLOUDINARY_API_SECRET: '' }).join(' | ');
     expect(p).toMatch(/CLOUDINARY/); expect(p).toMatch(/routing provider/);

@@ -1,6 +1,6 @@
 // backend/src/controllers/ride.controller.js
 const prisma = require('../lib/prisma');
-const { riderPaymentChoice } = require('../services/walletOps');
+const { riderPaymentChoice, tryDebitWallet, creditWallet } = require('../services/walletOps');
 const outbox = require('../services/outbox.service');
 const fleetService = require('../services/fleet.service');
 const { validationResult } = require('express-validator');
@@ -439,9 +439,9 @@ exports.completeRide = async (req, res) => {
     if (prepaid) { return { updatedRide: await tx.ride.findUnique({ where: { id } }), payment: prepaid, method: prepaid.method }; } // already paid in the app: nothing more to take or credit
     let m = wanted;
     if (m === 'WALLET') {
-      const taken = await tx.wallet.updateMany({ where: { userId: ride.customerId, balance: { gte: finalFare } }, data: { balance: { decrement: finalFare } } });
-      if (taken.count === 1) {
-        await tx.wallet.update({ where: { userId: req.user.id }, data: { balance: { increment: driverEarnings } } });
+      const taken = await tryDebitWallet(tx, { userId: ride.customerId }, finalFare, { refType: 'RIDE_PAYMENT', refId: id, actor: req.user.id, memo: 'Wallet payment at completion', idempotencyKey: `RIDE_PAYMENT_DEBIT:${id}` });
+      if (taken) {
+        await creditWallet(tx, { userId: req.user.id }, driverEarnings, { refType: 'RIDE_EARNING', refId: id, actor: req.user.id, memo: 'Earnings at completion', idempotencyKey: `RIDE_EARNING_CREDIT:${id}` });
         await tx.walletTransaction.create({ data: { walletId: (await tx.wallet.findUnique({ where: { userId: ride.customerId }, select: { id: true } })).id, type: 'DEBIT', amount: finalFare, description: `Ride payment - ${ride.pickupAddress} to ${ride.dropoffAddress}`, status: 'COMPLETED', reference: `RIDE-${id}` } });
       } else { m = 'CASH'; }
     }

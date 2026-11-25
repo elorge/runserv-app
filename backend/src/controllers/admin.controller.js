@@ -3,7 +3,7 @@
 
 const prisma = require('../lib/prisma');
 const { AppError } = require('../middleware/errorHandler');
-const { debitWallet, creditWallet, claim, newReference } = require('../services/walletOps');
+const { debitWallet, creditWallet, creditOps, claim, newReference } = require('../services/walletOps');
 const notificationService = require('../services/notification.service');
 const emailService = require('../services/email.service');
 const { invalidateFareCache, getSettings } = require('../utils/fareEngine');
@@ -665,10 +665,7 @@ exports.approveDriver = async (req, res) => {
     const wallet = await prisma.wallet.findUnique({ where: { userId: driver.userId } });
     if (wallet) {
       await prisma.$transaction([
-        prisma.wallet.update({
-          where: { id: wallet.id },
-          data:  { balance: { increment: bonusAmount } },
-        }),
+        ...creditOps(prisma, { walletId: wallet.id, currency: wallet.currency, amount: bonusAmount, refType: 'ONBOARDING_BONUS', refId: `DRV-${driver.userId}-${Date.now()}`, actor: req.user.id, memo: 'Onboarding bonus' }),
         prisma.walletTransaction.create({
           data: {
             walletId:    wallet.id,
@@ -978,10 +975,7 @@ exports.approvePartner = async (req, res) => {
     const wallet = await prisma.wallet.findUnique({ where: { userId: partner.userId } });
     if (wallet) {
       await prisma.$transaction([
-        prisma.wallet.update({
-          where: { id: wallet.id },
-          data:  { balance: { increment: bonusAmount } },
-        }),
+        ...creditOps(prisma, { walletId: wallet.id, currency: wallet.currency, amount: bonusAmount, refType: 'ONBOARDING_BONUS', refId: `PTR-${partner.userId}-${Date.now()}`, actor: req.user.id, memo: 'Onboarding bonus' }),
         prisma.walletTransaction.create({
           data: {
             walletId:    wallet.id,
@@ -2100,10 +2094,7 @@ exports.disburseOnboardingBonuses = async (req, res) => {
 
   await prisma.$transaction([
     ...driversEligible.flatMap(driver => [
-      prisma.wallet.update({
-        where: { id: driver.user.wallet.id },
-        data:  { balance: { increment: driverAmt(driver.user) } },
-      }),
+      ...creditOps(prisma, { walletId: driver.user.wallet.id, currency: driver.user.wallet.currency, amount: driverAmt(driver.user), refType: 'ONBOARDING_BONUS', refId: `DRV-${driver.user.id}-${REF}`, actor: req.user.id, memo: 'Onboarding bonus (bulk)', idempotencyKey: `ONBOARDING_BONUS:DRV-${driver.user.id}-${REF}` }),
       prisma.walletTransaction.create({
         data: {
           walletId:    driver.user.wallet.id,
@@ -2116,10 +2107,7 @@ exports.disburseOnboardingBonuses = async (req, res) => {
       }),
     ]),
     ...partnersEligible.flatMap(partner => [
-      prisma.wallet.update({
-        where: { id: partner.user.wallet.id },
-        data:  { balance: { increment: partnerAmt(partner.user) } },
-      }),
+      ...creditOps(prisma, { walletId: partner.user.wallet.id, currency: partner.user.wallet.currency, amount: partnerAmt(partner.user), refType: 'ONBOARDING_BONUS', refId: `PTR-${partner.user.id}-${REF}`, actor: req.user.id, memo: 'Onboarding bonus (bulk)', idempotencyKey: `ONBOARDING_BONUS:PTR-${partner.user.id}-${REF}` }),
       prisma.walletTransaction.create({
         data: {
           walletId:    partner.user.wallet.id,
@@ -2271,10 +2259,7 @@ exports.disburseCustomBonuses = async (req, res) => {
   try {
   await prisma.$transaction(
     wallets.flatMap((wallet, index) => [
-      prisma.wallet.update({
-        where: { id: wallet.id },
-        data:  { balance: { increment: amount } },
-      }),
+      ...creditOps(prisma, { walletId: wallet.id, currency: bonusCurrency, amount: amount, refType: 'ADMIN_BONUS', refId: `${refBase}-${index}`, actor: req.user.id, memo: description || 'Admin bonus', idempotencyKey: `ADMIN_BONUS:${refBase}-${index}` }),
       prisma.walletTransaction.create({
         data: {
           walletId:    wallet.id,

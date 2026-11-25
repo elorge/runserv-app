@@ -6,7 +6,7 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Image, Aler
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { deliveryAPI, uploadAPI } from '../services/api';
-import { FAIL_REASONS, cleanCode, isRecipientCode, proofState, validateFailure, proofErrorMessage } from '../utils/proofOfDelivery';
+import { FAIL_REASONS, cleanCode, isRecipientCode, proofState, validateFailure, proofErrorMessage, isAmbiguousFailure, proofFromActive } from '../utils/proofOfDelivery';
 
 const RED = '#DC2626';
 
@@ -49,15 +49,30 @@ export default function ProofOfDeliveryPanel({ delivery, theme, accent = '#00C2A
     try { await fn(); } finally { pending.current = false; setBusy(false); }
   };
 
+  // After a timeout / lost connection the code may already have been checked by the server. Re-read the server state; never re-send the code on the courier's behalf.
+  const recheck = async () => {
+    try { const proof = proofFromActive(await deliveryAPI.getActiveDelivery(), delivery.id); return proof; } catch { return null; }
+  };
+
   const confirmHandover = () => run(async () => {
+    let stage = 'upload';
     try {
       const ref = photo ? await ensureUploaded() : undefined;
+      stage = 'verify';
       await deliveryAPI.verifyProof(delivery.id, { code, ...(ref ? { photoUrl: ref } : {}) });
       merge({ verified: true, locked: false }); setConfirming(false); setCode('');
     } catch (e) {
-      if (upload === 'failed') { setError({ text: 'The photo did not upload. Check your connection and try again.', retry: true }); return; }
+      if (stage === 'upload') { setError({ text: 'The photo did not upload, so nothing was submitted. Check your connection and try again.', retry: true }); return; }
+      if (isAmbiguousFailure(e)) {
+        const proof = await recheck();
+        if (proof?.verified) { merge({ ...proof }); setConfirming(false); setCode(''); return; }
+        if (proof?.locked) { merge({ ...proof }); setConfirming(false); setCode(''); setError(proofErrorMessage({ status: 429, code: 'POD_LOCKED' })); return; }
+        setError(proofErrorMessage(e));     // the code stays in the box (memory only) so one tap retries; nothing is stored on the device
+        return;
+      }
       const m = proofErrorMessage(e); setError(m); setConfirming(false);
       if (e?.code === 'POD_LOCKED') merge({ locked: true });
+      if (e?.code === 'POD_ALREADY_VERIFIED') merge({ verified: true, locked: false });
       setCode('');
     }
   });

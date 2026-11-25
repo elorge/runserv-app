@@ -1,7 +1,7 @@
 // The fleet's own API (/api/fleet/*). Every call is scoped to the caller's fleet on the server.
 import api from './index';
 import type {
-  ApplyInput, FleetDocument, FleetProfile, FleetRole, Overview, PortalAssignment, PortalSettlement, PortalTrip, PortalVehicle, TeamMember, Compliance,
+  ApplyInput, FleetDocument, FleetProfile, FleetRole, Overview, PortalAssignment, FleetInvitation, FleetShift, PortalSettlement, PortalTrip, PortalVehicle, TeamMember, Compliance,
 } from '@/types/fleetPortal';
 
 const d = <T>(p: Promise<any>): Promise<T> => p.then((r) => r.data.data as T);
@@ -42,6 +42,13 @@ export const fleetPortalAPI = {
   dispute: (id: string, note: string) => d<{ settlement: PortalSettlement }>(api.post(`/fleet/settlements/${id}/dispute`, { note })),
 
   team: () => d<{ users: TeamMember[] }>(api.get('/fleet/users')).then((r) => r.users),
+  invitations: () => d<{ invitations: FleetInvitation[] }>(api.get('/fleet/invitations')).then((r) => r.invitations),
+  invite: (body: { email: string; role: Exclude<FleetRole, 'OWNER'> }) => d<{ invitation: FleetInvitation; acceptUrl: string; emailed: boolean }>(api.post('/fleet/invitations', body)),
+  revokeInvitation: (id: string) => d<{ revoked: boolean }>(api.delete(`/fleet/invitations/${id}`)),
+  acceptInvitation: (token: string) => d<{ member: { id: string } }>(api.post('/fleet/invitations/accept', { token })),
+  shifts: (params: { from: string; to: string }) => d<{ shifts: FleetShift[] }>(api.get('/fleet/shifts', { params })).then((r) => r.shifts),
+  createShift: (body: { vehicleId: string; driverUserId: string; startsAt: string; endsAt: string; note?: string }) => d<{ shift: FleetShift }>(api.post('/fleet/shifts', body)),
+  cancelShift: (id: string) => d<{ cancelled: boolean }>(api.delete(`/fleet/shifts/${id}`)),
   addMember: (body: { email: string; role: Exclude<FleetRole, 'OWNER'> }) => d<{ user: TeamMember }>(api.post('/fleet/users', body)),
   updateMember: (id: string, body: { role?: Exclude<FleetRole, 'OWNER'>; isActive?: boolean }) => d<{ user: TeamMember }>(api.put(`/fleet/users/${id}`, body)),
 };

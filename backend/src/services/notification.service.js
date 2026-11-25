@@ -52,6 +52,14 @@ exports.notify = async ({ userId, title, message, type, data = {}, socketOnly = 
     });
   }
 
+  // 3. WP-08: best-effort push to the user's registered devices (never blocks or fails the caller)
+  if (!socketOnly) {
+    try {
+      require('./push.service').sendToUser(userId, { title, body: message, type, data, notificationId: notification?.id })
+        .catch((e) => console.error('[notify] push failed:', e.message));
+    } catch (e) { console.error('[notify] push failed:', e.message); }
+  }
+
   return notification;
 };
 

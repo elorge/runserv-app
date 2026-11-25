@@ -3,16 +3,21 @@ const jwt = require('jsonwebtoken');
 
 describe('debitWallet: one conditional update, never check-then-spend', () => {
   const { debitWallet } = require('../src/services/walletOps');
+  const M = { currency: 'NGN', refType: 'TEST', refId: 'r1' };
+  test('refuses a mutation with no ledger context (WP-01)', async () => {
+    await expect(debitWallet(txWith(1), { id: 'w1' }, 5)).rejects.toMatchObject({ statusCode: 500 });
+    await expect(require('../src/services/walletOps').creditWallet(txWith(1), { id: 'w1' }, 5, { refType: 'X' })).rejects.toMatchObject({ statusCode: 500 });
+  });
   const txWith = (count) => ({ wallet: { updateMany: jest.fn().mockResolvedValue({ count }) } });
   test('takes the money only if the balance covers it (balance >= amount in the WHERE clause)', async () => {
-    const tx = txWith(1); await debitWallet(tx, { userId: 'u1' }, 500);
-    expect(tx.wallet.updateMany).toHaveBeenCalledWith({ where: { userId: 'u1', balance: { gte: 500 } }, data: { balance: { decrement: 500 } } });
+    const tx = txWith(1); await debitWallet(tx, { id: 'w1' }, 500, M);
+    expect(tx.wallet.updateMany).toHaveBeenCalledWith({ where: { id: 'w1', currency: 'NGN', balance: { gte: 500 } }, data: { balance: { decrement: 500 } } });
   });
   test('refuses when nothing matched (the second of two parallel spends lands here)', async () => {
-    await expect(debitWallet(txWith(0), { userId: 'u1' }, 500)).rejects.toMatchObject({ statusCode: 400, message: 'Insufficient wallet balance' });
+    await expect(debitWallet(txWith(0), { id: 'w1' }, 500, M)).rejects.toMatchObject({ statusCode: 400, message: 'Insufficient wallet balance' });
   });
   test('refuses zero, negative and non-numeric amounts', async () => {
-    for (const bad of [0, -1, 'x', NaN, Infinity]) await expect(debitWallet(txWith(1), { userId: 'u1' }, bad)).rejects.toMatchObject({ statusCode: 400 });
+    for (const bad of [0, -1, 'x', NaN, Infinity]) await expect(debitWallet(txWith(1), { id: 'w1' }, bad, M)).rejects.toMatchObject({ statusCode: 400 });
   });
   test('only an explicit WALLET choice is acted on', () => {
     const { riderPaymentChoice } = require('../src/services/walletOps');
@@ -28,7 +33,7 @@ describe('environment guard fails closed', () => {
     expect(g.productionProblems({ NODE_ENV: 'production', JWT_SECRET: 'short', DATABASE_URL: 'x' }).join(' ')).toMatch(/JWT_SECRET/);
     expect(g.productionProblems({ NODE_ENV: 'production', JWT_SECRET: 'secret' + 'x'.repeat(40), DATABASE_URL: 'x', CLIENT_URL: 'https://a' }).join(' ')).toMatch(/placeholder/);
     expect(() => g.assertProductionEnv({ NODE_ENV: 'production' })).toThrow(/unsafe configuration/);
-    const good = { NODE_ENV: 'production', JWT_SECRET: 'q'.repeat(48), DATABASE_URL: 'x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's', OSRM_URL: 'https://osrm.example.com' };
+    const good = { NODE_ENV: 'production', REQUIRE_STAFF_MFA: 'true', MFA_ENCRYPTION_KEY: 'm'.repeat(32), JWT_SECRET: 'q'.repeat(48), DATABASE_URL: 'x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's', OSRM_URL: 'https://osrm.example.com' };
     expect(g.productionProblems(good)).toEqual([]);
   });
   test('bank receipts need an encryption key in production', () => {

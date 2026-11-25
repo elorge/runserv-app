@@ -31,6 +31,10 @@ router.post('/apply', applyLimiter, [
   body('rcNumber').optional({ checkFalsy: true }).isString().isLength({ min: 6, max: 20 }), body('taxId').optional().isString(), body('address').optional().isString(),
 ], validate, c.apply);
 
+// Accepting an invitation is done by a signed-in person who does not have a fleet yet, so it sits before loadMember.
+const acceptLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => req.user?.id || req.ip, message: { success: false, message: 'Too many attempts. Please try again later.' } });
+router.post('/invitations/accept', acceptLimiter, [body('token').isString().isLength({ min: 20, max: 100 })], validate, c.acceptInvitation);
+
 router.use(loadMember);
 const { need } = require('../services/fleetAccess');
 
@@ -67,6 +71,12 @@ router.post('/assignments', [body('vehicleId').isString().notEmpty(), body('driv
 router.put('/assignments/:id/end', id, validate, c.endAssignment);
 
 router.get('/trips', [query('status').optional().isIn(['OFFERED', 'ACCEPTED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'DISPUTED']), query('exceptions').optional().isBoolean()], validate, c.listTrips);
+router.get('/invitations', c.listInvitations);
+router.post('/invitations', need('manageUsers'), [body('email').isEmail(), body('role').isIn(roles)], validate, c.invite);
+router.delete('/invitations/:id', need('manageUsers'), id, validate, c.revokeInvitation);
+router.get('/shifts', [query('from').optional().isISO8601(), query('to').optional().isISO8601()], validate, c.listShifts);
+router.post('/shifts', need('assignDrivers'), [body('vehicleId').isString().notEmpty(), body('driverUserId').isString().notEmpty(), body('startsAt').isISO8601(), body('endsAt').isISO8601(), body('note').optional({ nullable: true }).isString().isLength({ max: 300 })], validate, c.createShift);
+router.delete('/shifts/:id', need('assignDrivers'), id, validate, c.cancelShift);
 router.get('/settlements', c.listSettlements);
 router.get('/settlements/:id', id, validate, c.getSettlement);
 router.post('/settlements/:id/dispute', id, [body('note').isString().notEmpty().isLength({ max: 1000 })], validate, c.dispute);

@@ -39,6 +39,7 @@ router.post(
     body('dropoffLat').isFloat({ min: -90, max: 90 }),
     body('dropoffLng').isFloat({ min: -180, max: 180 }),
     body('dropoffContact').notEmpty(),
+    body('recipientEmail').optional({ nullable: true, checkFalsy: true }).isString().trim().isLength({ max: 254 }).isEmail().withMessage('Enter a valid recipient email address.'),   // WP-07: shape here; the required rule is enforced in the controller (deliveryComms.recipientEmailRequired)
     body('packageDescription').notEmpty(),
     body('packageWeight').optional().isFloat({ min: 0 }),
     body('packageValue').optional().isFloat({ min: 0 }),

@@ -98,7 +98,7 @@ describe('failed transfers are refunded exactly once', () => {
       // real Prisma rolls back on error; mimic by snapshotting
       $transaction: async (ops) => {
         const snap = JSON.stringify({ w: state.wallet, p: state.payout, r: state.refunds });
-        try { for (const op of ops) await op(); }
+        try { for (const op of ops) await (typeof op === "function" ? op() : op); }
         catch (e) { const s = JSON.parse(snap); state.wallet = s.w; state.payout = s.p; state.refunds = s.r; throw e; }
       },
     };

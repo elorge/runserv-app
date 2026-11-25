@@ -11,11 +11,11 @@ const ops = require('../src/services/walletOps');
 describe('wallet helpers', () => {
   test('creditWallet is one database increment and refuses a missing wallet', async () => {
     const tx = { wallet: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) } };
-    await ops.creditWallet(tx, { id: 'w' }, 25.5);
-    expect(tx.wallet.updateMany).toHaveBeenCalledWith({ where: { id: 'w' }, data: { balance: { increment: 25.5 } } });
+    await ops.creditWallet(tx, { id: 'w' }, 25.5, { currency: 'NGN', refType: 'T', refId: '1' });
+    expect(tx.wallet.updateMany).toHaveBeenCalledWith({ where: { id: 'w', currency: 'NGN' }, data: { balance: { increment: 25.5 } } });
     tx.wallet.updateMany.mockResolvedValue({ count: 0 });
-    await expect(ops.creditWallet(tx, { id: 'x' }, 5)).rejects.toMatchObject({ statusCode: 404 });
-    await expect(ops.creditWallet(tx, { id: 'x' }, -5)).rejects.toMatchObject({ statusCode: 400 });
+    await expect(ops.creditWallet(tx, { id: 'x' }, 5, { currency: 'NGN', refType: 'T', refId: '1' })).rejects.toMatchObject({ statusCode: 404 });
+    await expect(ops.creditWallet(tx, { id: 'x' }, -5, { currency: 'NGN', refType: 'T', refId: '1' })).rejects.toMatchObject({ statusCode: 400 });
   });
   test('claim: only the request that still matches the row it read wins', async () => {
     const d = { updateMany: jest.fn().mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 }) };
@@ -169,7 +169,7 @@ describe('ledger', () => {
     const tx = { wallet: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) }, ledgerEntry: { createMany: jest.fn().mockResolvedValue({}) } };
     await ops.debitWallet(tx, { id: 'w1' }, 40, { currency: 'NGN', refType: 'X', refId: 'r' });
     expect(tx.ledgerEntry.createMany.mock.calls[0][0].data.find((r) => r.direction === 'DEBIT').account).toBe('WALLET:w1');
-    await ops.debitWallet(tx, { id: 'w1' }, 40);                                       // no meta, no ledger (existing callers unchanged)
+    await expect(ops.debitWallet(tx, { id: 'w1' }, 40)).rejects.toMatchObject({ statusCode: 500 });   // WP-01: no meta, no mutation
     expect(tx.ledgerEntry.createMany).toHaveBeenCalledTimes(1);
   });
 });

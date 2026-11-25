@@ -5,6 +5,14 @@
 export const FR_WORDS: Record<string, string> = {
   // ── Navigation ─────────────────────────────────────────────
   "Dashboard": "Tableau de bord",
+  "Recipient attention": "Destinataires à traiter",
+  "Pilot metrics": "Indicateurs du pilote",
+  "Email queue": "File d'e-mails",
+  "Rotate code (new code)": "Renouveler le code (nouveau code)",
+  "Resend same code": "Renvoyer le même code",
+  "Request exception": "Demander une exception",
+  "Reject": "Rejeter",
+
   "Users": "Utilisateurs",
   "Feedback": "Avis",
   "App Feedback": "Avis sur l'application",

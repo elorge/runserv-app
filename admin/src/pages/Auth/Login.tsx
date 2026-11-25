@@ -42,6 +42,8 @@ const Login: React.FC = () => {
         login({ ...u, fleet: { id: fd.fleetPartner.id, name: fd.fleetPartner.tradingName || fd.fleetPartner.legalName, status: fd.fleetPartner.status, verificationStatus: fd.fleetPartner.verificationStatus, role: fd.role, permissions: fd.permissions } }, token);
         toast.success('Welcome back'); navigate('/'); return;
       }
+      let invited = false; try { invited = !!sessionStorage.getItem('fleetInviteToken'); } catch { /* ignore */ }
+      if (invited) { login(u, token); navigate('/fleet/accept-invite'); return; }   // a fleet invitation is waiting: let them in only to accept it
       setError('This account has no organisation or fleet dashboard access. Ask your organisation admin to give you a role, or apply for a fleet partner account below.'); return;
     }
     login(u, token);

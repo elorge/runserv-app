@@ -6,13 +6,22 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { showHandoverCard, maskCode, spacedCode } from '../utils/proofOfDelivery';
+import { handoverEmailedNotice } from '../utils/recipientEmail';
 
 export default function HandoverCodeCard({ delivery, theme }) {
   const { user } = useAuth();
   const [reveal, setReveal] = useState(false);
   const visible = showHandoverCard(delivery, user);
   useEffect(() => { if (!visible) setReveal(false); }, [visible]);
-  if (!visible) return null;
+  if (!visible) {
+    // Option B: the recipient's email carries the code, so the server sends the sender none. Say so, neutrally: no code, no address.
+    const notice = handoverEmailedNotice(delivery, user);
+    return notice ? (
+      <View style={[st.card, { borderColor: theme.border, backgroundColor: theme.backgroundAlt }]} accessibilityLabel="Hand-over code emailed notice">
+        <Text style={{ color: theme.muted, fontSize: 13 }}>{notice}</Text>
+      </View>
+    ) : null;
+  }
   return (
     <View style={[st.card, { borderColor: theme.accent, backgroundColor: theme.accent + '12' }]} accessibilityLabel="Hand-over code card">
       <Text style={[st.label, { color: theme.hint }]}>HAND-OVER CODE</Text>

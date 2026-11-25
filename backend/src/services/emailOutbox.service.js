@@ -40,9 +40,11 @@ async function enqueueOtpTx(tx, { otpId, email }) {
 }
 
 /** Call INSIDE the booking transaction (same transaction as the delivery and its code hash). */
-async function enqueueDeliveryTx(tx, { kind, bookingId, email }) {
+async function enqueueDeliveryTx(tx, { kind, bookingId = null, deliveryId = null, email }) {
   if (!isDeliveryKind(kind)) throw new Error(`unknown delivery email kind ${kind}`);
-  return tx.emailOutbox.create({ data: { kind, bookingId, toEmail: email, toMasked: maskEmail(email) } });
+  if (!bookingId && !deliveryId) throw new Error('a delivery email needs a booking or a delivery');
+  // M16.2.2 (Option B): a REGISTERED customer's parcel has no booking, so its row points at the delivery. Guest rows are unchanged (bookingId only).
+  return tx.emailOutbox.create({ data: { kind, ...(bookingId ? { bookingId } : { deliveryId }), toEmail: email, toMasked: maskEmail(email) } });
 }
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -89,7 +91,18 @@ function senderTrackingMessage({ reference, trackingUrl }) {
 }
 
 /** Booking-based kinds. Returns null when sending would be wrong (cancelled, already handed over, failed, or tracking link gone). */
+async function renderRegistered(row, env, now) {
+  // M16.2.2 (Option B): a registered customer's parcel. Code only: there is no public tracking link for registered accounts (the sender follows it in the app).
+  if (row.kind !== KINDS.RECIPIENT_CODE && row.kind !== KINDS.RECIPIENT_CODE_REISSUED) return null;
+  const d = await prisma.delivery.findUnique({ where: { id: row.deliveryId } });
+  if (!d || d.status === 'CANCELLED' || d.podVerifiedAt || d.failedAt) return null;
+  const pc = require('./podCode.service');
+  if (pc.isExpired(d, now)) return null;
+  return recipientCodeMessage({ code: pc.codeFor(d, env), reference: require('./opsAlert.service').refOfDelivery(d.id), trackingUrl: null, reissued: row.kind === KINDS.RECIPIENT_CODE_REISSUED, expiresAt: d.podCodeExpiresAt });
+}
+
 async function renderDelivery(row, env, now) {
+  if (!row.bookingId && row.deliveryId) return renderRegistered(row, env, now);
   const gb = require('./guestBooking.service');
   const b = await prisma.guestBooking.findUnique({ where: { id: row.bookingId } });
   if (!b) return null;
@@ -120,8 +133,14 @@ async function render(row, env = process.env, now = Date.now()) {
 
 /** Audit for booking-based kinds only. Carries the kind, provider and a category: never the code, the token, the address or the message text. */
 async function auditDelivery(row, event, meta = {}) {
-  if (!isDeliveryKind(row.kind) || !row.bookingId) return;
-  await require('./guestIdentity.service').audit(event, { bookingId: row.bookingId, meta: { kind: row.kind, outboxId: row.id, ...meta } });
+  if (!isDeliveryKind(row.kind) || (!row.bookingId && !row.deliveryId)) return;
+  await require('./guestIdentity.service').audit(event, { bookingId: row.bookingId || null, meta: { kind: row.kind, outboxId: row.id, ...(row.deliveryId ? { deliveryId: row.deliveryId } : {}), ...meta } });
+}
+
+/** M16.2.2: a RECIPIENT notification that failed for good: tell operations now (best-effort, never throws, never blocks the worker). */
+function alertOps(row, why, category) {
+  if (!RECIPIENT_KINDS.includes(row.kind)) return;
+  require('./opsAlert.service').recipientHandoverFailed({ bookingId: row.bookingId || null, deliveryId: row.deliveryId || null, why, category }).catch(() => {});
 }
 
 const bump = (provider, key, ms, now) => quota.markUnhealthy(provider, key, ms, now).catch(() => {});
@@ -165,7 +184,7 @@ async function processEvent(id, { now = new Date(), env = process.env, http = un
     const cat = e.category || 'TRANSIENT';
     const msg = String(e.message || e).slice(0, 300);
     const exhausted = row.attempts >= MAX_ATTEMPTS;
-    const dead = (extra = {}) => settle({ status: 'DEAD', lastError: msg, errorCategory: cat, slotHeld: false, ...extra }).then(async () => { console.error('[email-outbox] dead-lettered', row.kind, cat); await auditDelivery(row, 'EMAIL_FAILED', { category: cat }); await auditDelivery(row, 'NOTIFICATION_DEAD_LETTERED', { category: cat }); return { dead: true }; });
+    const dead = (extra = {}) => settle({ status: 'DEAD', lastError: msg, errorCategory: cat, slotHeld: false, ...extra }).then(async () => { console.error('[email-outbox] dead-lettered', row.kind, cat); await auditDelivery(row, 'EMAIL_FAILED', { category: cat }); await auditDelivery(row, 'NOTIFICATION_DEAD_LETTERED', { category: cat }); alertOps(row, 'EMAIL_DEAD', cat); return { dead: true }; });
     const retry = (extra = {}, ms = backoffMs(row.attempts)) => settle({ status: 'PENDING', lastError: msg, errorCategory: cat, nextAttemptAt: new Date(now.getTime() + ms), ...extra }).then(() => ({ retry: true }));
     if (cat === 'TIMEOUT' && held) return exhausted ? dead() : retry({ slotHeld: true });   // ambiguous: keep the slot and the provider; the same code is re-sent at most
     if (held) await quota.release(held.provider, held.key).catch(() => {});                 // certainly not accepted: slot goes back
@@ -190,6 +209,14 @@ async function processForOtp(otpId, opts = {}) {
 /** Immediate best-effort send right after the booking commits; the worker retries anything that fails. */
 async function processForBooking(bookingId, opts = {}) {
   const rows = await prisma.emailOutbox.findMany({ where: { bookingId, status: 'PENDING' } });
+  const out = [];
+  for (const r of rows) out.push(await processEvent(r.id, opts));
+  return out;
+}
+
+/** Same as processForBooking, for a REGISTERED customer's parcel (Option B). */
+async function processForDelivery(deliveryId, opts = {}) {
+  const rows = await prisma.emailOutbox.findMany({ where: { deliveryId, status: 'PENDING' } });
   const out = [];
   for (const r of rows) out.push(await processEvent(r.id, opts));
   return out;
@@ -245,6 +272,8 @@ function rowState(row) {
 
 /** The newest row of a kind for a booking (a resend adds a newer row; the older one stays as history). */
 const latestForBooking = (bookingId, kind) => prisma.emailOutbox.findFirst({ where: { bookingId, kind: Array.isArray(kind) ? { in: kind } : kind }, orderBy: { createdAt: 'desc' } });
+/** M16.2.2: the same for a registered parcel (rows that point at the delivery). */
+const latestForDelivery = (deliveryId, kind) => prisma.emailOutbox.findFirst({ where: { deliveryId, kind: Array.isArray(kind) ? { in: kind } : kind }, orderBy: { createdAt: 'desc' } });
 
 /** What the guest's own app may learn about a challenge's email: a truthful state, nothing else. */
 async function stateForOtp(otpId) {
@@ -300,6 +329,8 @@ async function applyDeliveryEvent(provider, ev) {
   if (!row) return { unknownMessage: true };
   if ((RANK[ev.status] ?? 0) <= (RANK[row.deliveryStatus] ?? -1)) return { ignored: true };
   await prisma.emailOutbox.update({ where: { id: row.id }, data: { deliveryStatus: ev.status, deliveryAt: new Date(), ...(['HARD_BOUNCE', 'BLOCKED'].includes(ev.status) ? { errorCategory: ev.status === 'HARD_BOUNCE' ? 'INVALID_ADDRESS' : 'BLOCKED' } : {}) } });
+  // M16.2.2: the provider accepted it but the receiving server rejected it: the recipient never got the code, so operations are told as well.
+  if (['HARD_BOUNCE', 'BLOCKED'].includes(ev.status)) alertOps(row, 'EMAIL_BOUNCED', ev.status === 'HARD_BOUNCE' ? 'INVALID_ADDRESS' : 'BLOCKED');
   return { updated: true };
 }
 
@@ -316,4 +347,4 @@ const startWorker = ({ intervalMs = 15000 } = {}) => {
 };
 const stopWorker = () => { if (timer) { clearInterval(timer); timer = null; } };
 
-module.exports = { KINDS, RECIPIENT_KINDS, DELIVERY_KINDS, isDeliveryKind, deliveryEnabled, senderTrackingEnabled, kindEnabled, enqueueDeliveryTx, recipientCodeMessage, senderTrackingMessage, processForBooking, rowState, latestForBooking, MAX_ATTEMPTS, SCRUB_DEAD_DAYS, backoffMs, maskEmail, otpMessage, enqueueOtpTx, render, processEvent, processForOtp, processDue, scrubDead, requeue, stateForOtp, stats, normaliseWebhook, applyDeliveryEvent, startWorker, stopWorker };
+module.exports = { KINDS, RECIPIENT_KINDS, DELIVERY_KINDS, isDeliveryKind, deliveryEnabled, senderTrackingEnabled, kindEnabled, enqueueDeliveryTx, recipientCodeMessage, senderTrackingMessage, processForBooking, processForDelivery, rowState, latestForBooking, latestForDelivery, MAX_ATTEMPTS, SCRUB_DEAD_DAYS, backoffMs, maskEmail, otpMessage, enqueueOtpTx, render, processEvent, processForOtp, processDue, scrubDead, requeue, stateForOtp, stats, normaliseWebhook, applyDeliveryEvent, startWorker, stopWorker };

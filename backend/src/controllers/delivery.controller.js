@@ -1,6 +1,6 @@
 // backend/src/controllers/delivery.controller.js
 const prisma = require('../lib/prisma');
-const { riderPaymentChoice } = require('../services/walletOps');
+const { riderPaymentChoice, tryDebitWallet, creditWallet } = require('../services/walletOps');
 const outbox = require('../services/outbox.service');
 const fleetService = require('../services/fleet.service');
 const { validationResult } = require('express-validator');
@@ -20,12 +20,19 @@ const tracking = require('../services/tracking.service');
 const pod = require('../services/proofOfDelivery.service');
 const crypto = require('crypto');
 const { podHash, podCodeFor } = require('../services/guestBooking.service');
+const podCodeSvc = require('../services/podCode.service');
+const comms = require('../services/deliveryComms.service');
+const emailOutbox = require('../services/emailOutbox.service');
+const identityAudit = (...a) => require('../services/guestIdentity.service').audit(...a);
 
 /** Delivery as the caller may see it: non-sensitive proof state for everyone involved, and the hand-over code ONLY for the sender who owns it. */
 const withProof = (delivery, user) => {
   if (!delivery) return delivery;
   const out = { ...delivery, proof: pod.proofView(delivery) };
-  if (delivery.podCodeHash && user.role !== 'DELIVERY_PARTNER' && delivery.customerId === user.id && !delivery.podVerifiedAt && !delivery.failedAt) out.podCode = podCodeFor(delivery.id);
+  // M16.2.2: when the RECIPIENT's email carries the code (Option B / guest flow), the sender's screen does not show it. Legacy deliveries without a recipient email keep showing it.
+  if (delivery.podCodeHash && user.role !== 'DELIVERY_PARTNER' && delivery.customerId === user.id && !delivery.podVerifiedAt && !delivery.failedAt && comms.senderMayViewCode({ recipientEmail: delivery.recipientEmail })) out.podCode = podCodeSvc.codeFor(delivery);
+  delete out.podCodeNonce; delete out.podCodeHash;           // code material never leaves the server (the nonce + the server secret derive the code)
+  delete out.recipientEmail;                                  // the recipient's address never goes back to the sender's app (it is masked in Admin)
   return out;
 };
 
@@ -70,6 +77,11 @@ exports.requestDelivery = async (req, res) => {
   if (!errors.isEmpty()) {
     return res.status(400).json({ success: false, errors: errors.array() });
   }
+
+  // M16.2.2 (Option B): with PARCEL_PILOT_SCOPE=guest_and_registered a registered customer's parcel follows the SAME recipient email flow as a guest parcel.
+  const optionB = comms.registeredEmailFlow() && comms.channels().email;
+  const recipientEmail = optionB ? comms.parseRecipientEmail(req.body.recipientEmail) : null;
+  if (optionB && !recipientEmail && comms.recipientEmailRequired()) throw Object.assign(new AppError('Enter the recipient\'s email address. The hand-over code is sent there.', 400, 'RECIPIENT_EMAIL_REQUIRED'));
 
   const {
     pickupAddress, pickupLat, pickupLng, pickupContact,
@@ -135,13 +147,16 @@ exports.requestDelivery = async (req, res) => {
     : null;
 
   // M15: a hand-over code for every delivery when POD_CODE_ALL_DELIVERIES=true (default off; guest parcels always have one).
-  const withCode = pod.codeForAllDeliveries();
+  const withCode = pod.codeForAllDeliveries() || optionB;      // Option B: every registered parcel has a code (the recipient flow needs one)
   const newId = withCode ? crypto.randomUUID() : null;
-  const podCode = withCode ? podCodeFor(newId) : null;
+  // Option B: an unpredictable, expiring code (podCode.service); otherwise the legacy derivation, unchanged.
+  const fresh = withCode && optionB ? podCodeSvc.generate(newId) : null;
+  const podCode = withCode ? (fresh ? fresh.code : podCodeFor(newId)) : null;
 
-  const delivery = await prisma.delivery.create({
+  const createData = {
     data: {
       ...(withCode ? { id: newId, podCodeHash: podHash(newId, podCode) } : {}),
+      ...(fresh ? { podCodeNonce: fresh.nonce, podCodeVersion: 1, podCodeExpiresAt: fresh.expiresAt, ...(recipientEmail ? { recipientEmail } : {}) } : {}),
       paymentMethod: riderPaymentChoice(req.body.paymentMethod),
       customerId: req.user.id,
       pickupAddress, pickupLat, pickupLng, pickupContact,
@@ -157,7 +172,19 @@ exports.requestDelivery = async (req, res) => {
     include: {
       customer: { select: { id: true, firstName: true, lastName: true, phone: true, profileImage: true } }
     }
-  });
+  };
+  // Option B: the delivery and its recipient email are written in ONE transaction, so a parcel can never exist without its notification queued.
+  // The recipient SMS is written in that same transaction (durable outbox row): a crash right after commit can no longer lose it.
+  let smsQueued = null;
+  const delivery = (optionB || withCode)
+    ? await prisma.$transaction(async (tx) => {
+        const row = await tx.delivery.create(createData);
+        if (optionB) await comms.enqueueRegisteredTx(tx, { deliveryId: row.id, recipientEmail });
+        if (withCode) smsQueued = await comms.enqueueRegisteredSmsTx(tx, { deliveryId: row.id, phone: dropoffContact, countryCode: pricingCtx.countryCode, codeVersion: row.podCodeVersion ?? 1 });
+        return row;
+      })
+    : await prisma.delivery.create(createData);
+  if (optionB) await identityAudit('POD_CODE_CREATED', { meta: { deliveryId: delivery.id, source: 'REGISTERED', codeVersion: 1, expiresAt: fresh?.expiresAt ?? null } });
 
   if (orgEval) {
     try {
@@ -197,12 +224,15 @@ exports.requestDelivery = async (req, res) => {
   }
 
   // Recipient gets the code by SMS (best effort, international format). The sender also sees it in the app.
-  if (withCode) pod.smsRecipientCode({ phone: dropoffContact, countryCode: pricingCtx.countryCode, code: podCode }).catch(() => {});
+  // WP-07: SMS goes through the durable SMS outbox (status, retries, provider id), never a fire-and-forget direct send. Disabled channel: nothing queued, status DISABLED.
+  if ((optionB && recipientEmail) || smsQueued) comms.dispatchRegistered(delivery.id);       // best-effort immediate send; the outbox workers retry anything that fails
 
+  // The sender sees the code only when the recipient's email does NOT carry it (legacy / unset scope).
+  const senderSeesCode = withCode && comms.senderMayViewCode({ recipientEmail });
   res.status(201).json({
     success: true,
     message: 'Delivery requested successfully. Looking for nearby delivery partners...',
-    data: { delivery: withProof(delivery, req.user), feeBreakdown: feeResult, partnerFloorApplied: !!partnerFloorResult, promoApplied: !!appliedPromo, ...(withCode ? { podCode } : {}) }
+    data: { delivery: withProof(delivery, req.user), feeBreakdown: feeResult, partnerFloorApplied: !!partnerFloorResult, promoApplied: !!appliedPromo, ...(senderSeesCode ? { podCode } : {}) }
   });
 };
 
@@ -395,9 +425,9 @@ exports.completeDelivery = async (req, res) => {
     if (prepaid) { return { updatedDelivery: await tx.delivery.findUnique({ where: { id } }), payment: prepaid, method: prepaid.method }; } // already paid in the app: nothing more to take or credit
     let m = wanted;
     if (m === 'WALLET') {
-      const taken = await tx.wallet.updateMany({ where: { userId: delivery.customerId, balance: { gte: finalFee } }, data: { balance: { decrement: finalFee } } });
-      if (taken.count === 1) {
-        await tx.wallet.update({ where: { userId: req.user.id }, data: { balance: { increment: partnerEarnings } } });
+      const taken = await tryDebitWallet(tx, { userId: delivery.customerId }, finalFee, { refType: 'DELIVERY_PAYMENT', refId: id, actor: req.user.id, memo: 'Wallet payment at completion', idempotencyKey: `DELIVERY_PAYMENT_DEBIT:${id}` });
+      if (taken) {
+        await creditWallet(tx, { userId: req.user.id }, partnerEarnings, { refType: 'DELIVERY_EARNING', refId: id, actor: req.user.id, memo: 'Earnings at completion', idempotencyKey: `DELIVERY_EARNING_CREDIT:${id}` });
         await tx.walletTransaction.create({ data: { walletId: (await tx.wallet.findUnique({ where: { userId: delivery.customerId }, select: { id: true } })).id, type: 'DEBIT', amount: finalFee, description: `Delivery payment - ${delivery.pickupAddress} to ${delivery.dropoffAddress}`, status: 'COMPLETED', reference: `DEL-${id}` } });
       } else { m = 'CASH'; }
     }

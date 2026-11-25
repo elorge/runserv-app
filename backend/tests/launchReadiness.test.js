@@ -20,7 +20,7 @@ const svc = require('../src/services/fleet.service');
 const { checkEnvironment, parseArgs } = require('../scripts/force-cancel-accepted');
 
 const NOW = new Date('2026-11-19T10:00:00Z');
-const FLEET = { id: 'fleet-aaaaaa', status: 'ACTIVE', commissionRate: '0.150000', currency: 'NGN' };
+const FLEET = { id: 'fleet-aaaaaa', status: 'ACTIVE', verificationStatus: 'VERIFIED', commissionRate: '0.150000', currency: 'NGN' };
 
 // ── §3.1 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('force-cancel script guard', () => {
@@ -65,7 +65,7 @@ describe('approved fleet documents are required (every vehicle category)', () =>
   const vehicle = (type, docs) => ({ id: 'v1', vehicleType: type, status: 'ACTIVE', isActive: true, fleetPartnerId: 'f1', documents: docs,
     // Typed dates say "valid" — they must NOT count as proof.
     insuranceExpiresAt: '2099-01-01', roadworthyExpiresAt: '2099-01-01' });
-  const run = (v) => comp.dispatchEligibility({ fleetPartner: { status: 'ACTIVE' }, vehicle: v }, { now: NOW, strict: true });
+  const run = (v) => comp.dispatchEligibility({ fleetPartner: { status: 'ACTIVE', verificationStatus: 'VERIFIED' }, vehicle: v }, { now: NOW, strict: true });
   const good = [doc('insurance'), doc('roadworthy')];
 
   describe.each(['CAR', 'MOTORCYCLE', 'VAN', 'TRICYCLE'])('%s', (cat) => {
@@ -106,14 +106,14 @@ describe('approved fleet documents are required (every vehicle category)', () =>
     expect(comp.vehicleCompliance({ insuranceExpiresAt: '2027-01-01', roadworthyExpiresAt: '2027-01-01' }, { now: NOW, strict: true }).blockers.length).toBe(2);
   });
   test('driver-facing reasons carry stable codes for pending / rejected', () => {
-    const r = comp.dispatchReasons({ fleetPartner: { status: 'ACTIVE' }, vehicle: vehicle('CAR', [doc('insurance', { isApproved: false, verifiedAt: null }), doc('roadworthy', { isApproved: false, verifiedAt: null, rejectionNote: 'x' })]) }, { now: NOW, strict: true });
+    const r = comp.dispatchReasons({ fleetPartner: { status: 'ACTIVE', verificationStatus: 'VERIFIED' }, vehicle: vehicle('CAR', [doc('insurance', { isApproved: false, verifiedAt: null }), doc('roadworthy', { isApproved: false, verifiedAt: null, rejectionNote: 'x' })]) }, { now: NOW, strict: true });
     expect(r.reasons.map((x) => x.code).sort()).toEqual(['DOC_PENDING', 'DOC_REJECTED']);
   });
   test('the go-online / accept gate (assertDriverDispatchable) uses document records, and reports a stable code', async () => {
     const driver = { isActive: true, driverProfile: { isApproved: true, vehicleType: 'CAR', licenseNumber: 'L', licenseImageUrl: 'u' } };
-    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver, fleetPartner: { id: 'f1', status: 'ACTIVE' }, vehicle: vehicle('CAR', []) });
+    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver, fleetPartner: { id: 'f1', status: 'ACTIVE', verificationStatus: 'VERIFIED' }, vehicle: vehicle('CAR', []) });
     await expect(svc.assertDriverDispatchable('d1')).rejects.toMatchObject({ statusCode: 403, code: 'FLEET_NOT_DISPATCHABLE' });
-    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver, fleetPartner: { id: 'f1', status: 'ACTIVE' }, vehicle: vehicle('CAR', good) });
+    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver, fleetPartner: { id: 'f1', status: 'ACTIVE', verificationStatus: 'VERIFIED' }, vehicle: vehicle('CAR', good) });
     await expect(svc.assertDriverDispatchable('d1')).resolves.toMatchObject({ fleet: true });
   });
 });
@@ -165,7 +165,7 @@ describe('driver ↔ vehicle compatibility', () => {
     mockDb.fleetDriverAssignment.findFirst.mockResolvedValue(null);
     await expect(svc.assignDriver({ fleetPartner: FLEET, vehicleId: 'v1', driverUserId: 'd1', actor: 'u' })).rejects.toMatchObject({ statusCode: 409, code: 'DRIVER_VEHICLE_INCOMPATIBLE' });
     expect(mockDb.fleetDriverAssignment.create).not.toHaveBeenCalled();
-    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver: { isActive: true, driverProfile: profile({ vehicleType: 'CAR' }) }, fleetPartner: { id: FLEET.id, status: 'ACTIVE' }, vehicle: v });
+    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ fleetPartnerId: 'f1', vehicleId: 'v1', driver: { isActive: true, driverProfile: profile({ vehicleType: 'CAR' }) }, fleetPartner: { id: FLEET.id, status: 'ACTIVE', verificationStatus: 'VERIFIED' }, vehicle: v });
     await expect(svc.assertDriverDispatchable('d1')).rejects.toMatchObject({ statusCode: 403, code: 'DRIVER_VEHICLE_INCOMPATIBLE' });
   });
 });

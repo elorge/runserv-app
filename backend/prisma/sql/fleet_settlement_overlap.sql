@@ -16,4 +16,4 @@ DO $$ BEGIN
       "fleetPartnerId" WITH =,
       tstzrange("periodStart", "periodEnd") WITH &&
     ) WHERE ("status" <> 'CANCELLED');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;   -- an EXCLUDE constraint raises duplicate_table (42P07) on a re-run

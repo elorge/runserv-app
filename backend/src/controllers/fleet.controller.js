@@ -4,7 +4,7 @@
 const prisma = require('../lib/prisma');
 const { AppError } = require('../middleware/errorHandler');
 const { logActivity } = require('../utils/auditLog');
-const { CAN, can, assertCan } = require('../services/fleetAccess');
+const { CAN, can, assertCan, assertFleetActive } = require('../services/fleetAccess');
 const fleet = require('../services/fleet.service');
 const { vehicleCompliance } = require('../services/fleetCompliance');
 
@@ -253,3 +253,16 @@ exports.uploadDocumentFile = async (req, res) => {
   await logActivity({ userId: req.user.id, action: 'fleet_document_file_uploaded', entityType: 'FleetPartner', entityId: req.fleet.fleetPartnerId, details: { publicId: req.privateFile.publicId }, req });
   return ok(res, { url: req.privateFile.ref, publicId: req.privateFile.publicId, private: true }, 201);
 };
+
+// ── Team invitations and shifts ──────────────────────────────────────────────
+const team = require('../services/fleetTeam.service');
+exports.invite = async (req, res) => {
+  assertCan(req.fleet.member, 'manageUsers');
+  return ok(res, await team.invite({ fleetPartnerId: req.fleet.fleetPartnerId, fleetName: req.fleet.fleetPartner.tradingName || req.fleet.fleetPartner.legalName, email: req.body.email, role: req.body.role, actor: req.user.id, req }), 201);
+};
+exports.listInvitations = async (req, res) => { assertCan(req.fleet.member, 'manageUsers'); return ok(res, { invitations: await team.list(req.fleet.fleetPartnerId) }); };
+exports.revokeInvitation = async (req, res) => { assertCan(req.fleet.member, 'manageUsers'); return ok(res, await team.revoke({ id: req.params.id, fleetPartnerId: req.fleet.fleetPartnerId, actor: req.user.id, req })); };
+exports.acceptInvitation = async (req, res) => ok(res, { member: await team.accept({ token: req.body.token, user: req.user, req }) });
+exports.listShifts = async (req, res) => { assertCan(req.fleet.member, 'seeTrips'); return ok(res, { shifts: await team.listShifts({ fleetPartnerId: req.fleet.fleetPartnerId, from: req.query.from, to: req.query.to, vehicleId: req.query.vehicleId, driverUserId: req.query.driverUserId, includeCancelled: req.query.includeCancelled === 'true' }) }); };
+exports.createShift = async (req, res) => { assertCan(req.fleet.member, 'assignDrivers'); assertFleetActive(req.fleet); return ok(res, { shift: await team.createShift({ fleetPartnerId: req.fleet.fleetPartnerId, ...req.body, actor: req.user.id, req }) }, 201); };
+exports.cancelShift = async (req, res) => { assertCan(req.fleet.member, 'assignDrivers'); return ok(res, await team.cancelShift({ id: req.params.id, fleetPartnerId: req.fleet.fleetPartnerId, actor: req.user.id, req })); };

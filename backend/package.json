@@ -22,7 +22,13 @@
     "db:check-ledger": "node scripts/ledger-check.js",
     "seed:admin": "node prisma/seed-admin.js",
     "test:pg": "node tests/pg/concurrency.pg.js",
-    "db:rehearse": "bash scripts/rehearse-migrations.sh"
+    "db:rehearse": "bash scripts/rehearse-migrations.sh",
+    "db:apply-sql": "bash scripts/apply-sql.sh",
+    "db:baseline": "prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/baseline.sql",
+    "db:rehearse-full": "bash scripts/rehearse-full.sh",
+    "db:opening-balances": "node scripts/ledger-opening-balances.js",
+    "staging:check": "node scripts/staging-check.js",
+    "db:backup-drill": "bash scripts/backup-drill.sh"
   },
   "keywords": [
     "ride-hailing",

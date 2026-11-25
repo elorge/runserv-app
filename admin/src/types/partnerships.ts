@@ -39,6 +39,7 @@ export interface FleetDetail { fleet: FleetPartner & { members: FleetMember[]; d
 export interface FleetSettlement {
   id: string; fleetPartnerId: string; periodStart: string; periodEnd: string; grossAmount: Dec; platformFeeAmount: Dec; adjustmentsAmount: Dec; netAmount: Dec;
   currency: string; status: SettlementStatus; reference: string | null; paidAt: string | null; createdAt: string; fleetPartner?: { id: string; legalName: string };
+  paymentReference?: string | null; paymentMethod?: string | null; paidAmount?: Dec | null; paymentProofRef?: string | null; paymentNote?: string | null; payoutAccountMasked?: string | null;
 }
 
 // ── Bank Offers ───────────────────────────────────────────────────────────────

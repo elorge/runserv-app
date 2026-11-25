@@ -207,7 +207,7 @@ const settleDriversForInvoice = async ({ invoiceId, advance = false }) => {
 
       const reference = `ORGPAY-${payout.id}`;
       const ops = [
-        prisma.wallet.update({ where: { id: w.id }, data: { balance: { increment: net } } }),
+        ...require('./walletOps').creditOps(prisma, { walletId: w.id, currency: w.currency || invoice.currency, amount: net, refType: 'ORG_INVOICE_PAYOUT', refId: reference, memo: `Organisation rides ${invoice.period}`, idempotencyKey: `ORG_INVOICE_PAYOUT:${reference}` }),
         prisma.walletTransaction.create({ data: { walletId: w.id, type: 'CREDIT', amount: net, status: 'COMPLETED', reference, description: `Organisation rides ${invoice.period} — ${invoice.company.name} (${list.length} trip${list.length === 1 ? '' : 's'})` } }),
         prisma.orgPayout.update({ where: { id: payout.id }, data: { status: 'PAID', paidAt: new Date(), walletReference: reference } }),
         ...list.map((t) => prisma.corporateTrip.update({ where: { id: t.id }, data: { payoutStatus: 'PAID', driverPaidAmount: t.driverEarnings, orgPayoutId: payout.id } })),

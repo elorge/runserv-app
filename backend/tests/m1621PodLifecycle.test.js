@@ -210,11 +210,12 @@ describe('P1.3 pilot scope', () => {
     try { await expect(ctl.requestDelivery({ body: {}, user: { id: 'u' } }, {})).rejects.toMatchObject({ code: 'PILOT_GUEST_ONLY', statusCode: 403 }); } finally { delete process.env.PARCEL_PILOT_SCOPE; }
   });
   test('production start-up refuses delivery email without a TTL or without the recorded guest_only scope', () => {
-    const prod = { NODE_ENV: 'production', JWT_SECRET: 'j'.repeat(40), DATABASE_URL: 'postgres://x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'a', CLOUDINARY_API_KEY: 'b', CLOUDINARY_API_SECRET: 'c', OSRM_URL: 'https://osrm', GUEST_PLANNING_ENABLED: 'true', GUEST_BOOKING_ENABLED: 'true', GUEST_QUOTE_SECRET: 'q'.repeat(40), GUEST_HASH_SECRET: 'h'.repeat(40), GUEST_TRACKING_BASE_URL: 'https://api.x/t', GUEST_EMAIL_OTP_ENABLED: 'true', GUEST_OTP_CHANNEL: 'email', GUEST_OTP_HASH_SECRET: 'o'.repeat(40), BREVO_ENABLED: 'true', BREVO_API_KEY: 'k', BREVO_SENDER_EMAIL: 'a@b.co', EMAIL_DELIVERY_NOTIFICATIONS_ENABLED: 'true' };
+    const prod = { NODE_ENV: 'production', REQUIRE_STAFF_MFA: 'true', MFA_ENCRYPTION_KEY: 'm'.repeat(32), JWT_SECRET: 'j'.repeat(40), DATABASE_URL: 'postgres://x', CLIENT_URL: 'https://a', CLOUDINARY_CLOUD_NAME: 'a', CLOUDINARY_API_KEY: 'b', CLOUDINARY_API_SECRET: 'c', OSRM_URL: 'https://osrm', GUEST_PLANNING_ENABLED: 'true', GUEST_BOOKING_ENABLED: 'true', GUEST_QUOTE_SECRET: 'q'.repeat(40), GUEST_HASH_SECRET: 'h'.repeat(40), GUEST_TRACKING_BASE_URL: 'https://api.x/t', GUEST_EMAIL_OTP_ENABLED: 'true', GUEST_OTP_CHANNEL: 'email', GUEST_OTP_HASH_SECRET: 'o'.repeat(40), BREVO_ENABLED: 'true', BREVO_API_KEY: 'k', BREVO_SENDER_EMAIL: 'a@b.co', EMAIL_DELIVERY_NOTIFICATIONS_ENABLED: 'true' };
     const msgs = (e) => envGuard.productionProblems(e).join(' | ');
-    expect(msgs(prod)).toMatch(/POD_CODE_TTL_HOURS/); expect(msgs(prod)).toMatch(/PARCEL_PILOT_SCOPE=guest_only is required/);
+    expect(msgs(prod)).toMatch(/POD_CODE_TTL_HOURS/); expect(msgs(prod)).toMatch(/PARCEL_PILOT_SCOPE must be set/);
     expect(msgs({ ...prod, POD_CODE_TTL_HOURS: '12', PARCEL_PILOT_SCOPE: 'guest_only' })).toBe('');
-    expect(msgs({ ...prod, POD_CODE_TTL_HOURS: '12', PARCEL_PILOT_SCOPE: 'guest_and_registered' })).toMatch(/not supported yet/);
+    expect(msgs({ ...prod, POD_CODE_TTL_HOURS: '12', PARCEL_PILOT_SCOPE: 'guest_and_registered' })).not.toMatch(/PARCEL_PILOT_SCOPE/);   // M16.2.2: Option B is built, so it is accepted
+    expect(msgs({ ...prod, POD_CODE_TTL_HOURS: '12', PARCEL_PILOT_SCOPE: 'bogus' })).toMatch(/guest_only .*guest_and_registered/);
     expect(msgs({ ...prod, POD_CODE_TTL_HOURS: '0', PARCEL_PILOT_SCOPE: 'guest_only' })).toMatch(/POD_CODE_TTL_HOURS/);
   });
 });
@@ -230,7 +231,7 @@ describe('P1.4 failure escalation and recovery visibility', () => {
     mockDb.guestBooking.findMany = async () => [{ ...bk(), delivery: del(), identity: { countryCode: 'NG' } }];     // the fake has no relation includes
     const j = jest.fn(); process.env.EMAIL_DELIVERY_NOTIFICATIONS_ENABLED = 'true';
     try { await adminCtl.recipientAttention({ user: { id: 'a', role: 'ADMIN', countryCode: 'NG' } }, { status: () => ({ json: j }) }); } finally { delete process.env.EMAIL_DELIVERY_NOTIFICATIONS_ENABLED; }
-    expect(j.mock.calls[0][0].data.items).toHaveLength(1); expect(JSON.stringify(j.mock.calls[0][0])).not.toMatch(/ada\.obi|\d{6}|Allen/);
+    expect(j.mock.calls[0][0].data.items).toHaveLength(1); expect(JSON.stringify(j.mock.calls[0][0])).not.toMatch(/ada\.obi|\b\d{6}\b|Allen/);
   });
   test('an expired or locked code tells support to ROTATE, never to resend', async () => {
     const r = await book(await guestFor()); await settle(r.booking.id); del().podCodeExpiresAt = new Date(Date.now() - 1);

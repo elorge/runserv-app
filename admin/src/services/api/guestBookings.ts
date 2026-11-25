@@ -1,7 +1,7 @@
 // M16: typed wrappers for /api/admin/guest-bookings. Authorisation is enforced by the backend (market guard + scope + role);
 // hiding a button in the UI is not a control. Every call can therefore fail with 403/404 and the pages must show that.
 import api from './index';
-import type { GuestEmailQueue, EmailUsage, GuestSmsQueue, SmsStatus, GuestAbuse, GuestActionResult, GuestBookingDetail, GuestQueueParams, GuestQueueResult } from '@/types/guestBooking';
+import type { GuestEmailQueue, EmailUsage, GuestSmsQueue, SmsStatus, GuestAbuse, GuestActionResult, AttentionItem, PilotMetrics, GuestBookingDetail, GuestQueueParams, GuestQueueResult } from '@/types/guestBooking';
 
 const unwrap = <T,>(res: any): T => (res?.data?.data ?? res?.data) as T;
 
@@ -42,4 +42,21 @@ export const guestBookingsAPI = {
 
   /** POST /deliveries/:id/pod-override — ADMIN / SUPER_ADMIN only. Reason 10–300 chars; audited server-side. */
   podOverride: async (deliveryId: string, reason: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/deliveries/${deliveryId}/pod-override`, { reason })).data,
+
+  /** M16.2.1: POST /:id/recipient-notification/rotate — ADMIN / SUPER_ADMIN only. Issues a NEW code; the old one stops working. Reason 10–200 chars + confirm:true. */
+  rotateRecipient: async (bookingId: string, reason: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/${bookingId}/recipient-notification/rotate`, { reason, confirm: true })).data,
+
+  /** M16.2.1 (Option B): the same two actions for a registered customer's parcel, addressed by DELIVERY id. */
+  resendRecipientByDelivery: async (deliveryId: string, reason: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/deliveries/${deliveryId}/recipient-notification/resend`, { reason })).data,
+  rotateRecipientByDelivery: async (deliveryId: string, reason: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/deliveries/${deliveryId}/recipient-notification/rotate`, { reason, confirm: true })).data,
+
+  /** M16.2.1: manual hand-over exception = REQUEST (reason 10–300 + evidence 10–300), then a DIFFERENT operator APPROVES (podOverride) or REJECTS. */
+  exceptionRequest: async (deliveryId: string, reason: string, evidence: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/deliveries/${deliveryId}/handover-exception/request`, { reason, evidence })).data,
+  exceptionReject: async (deliveryId: string, reason: string): Promise<GuestActionResult> => (await api.post(`/admin/guest-bookings/deliveries/${deliveryId}/handover-exception/reject`, { reason })).data,
+
+  /** M16.2.1: GET /recipient-attention — parcels whose recipient has no working path to the code. */
+  attention: async (): Promise<{ items: AttentionItem[] }> => unwrap(await api.get('/admin/guest-bookings/recipient-attention')),
+
+  /** M16.2.1: GET /pilot-metrics?hours= */
+  pilotMetrics: async (hours = 168): Promise<PilotMetrics> => unwrap(await api.get('/admin/guest-bookings/pilot-metrics', { params: { hours } })),
 };

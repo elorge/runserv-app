@@ -263,6 +263,8 @@ const Sidebar: React.FC = () => {
         { name: 'All Deliveries', href: '/deliveries',      show: can.viewDeliveries   },
         { name: 'Live Map',       href: '/deliveries/live', show: can.manageDeliveries },
         { name: 'Guest bookings', href: '/guest-bookings',   show: can.viewDeliveries   },
+        { name: 'Recipient attention', href: '/guest-bookings/attention', show: can.viewDeliveries },
+        { name: 'Pilot metrics',  href: '/guest-bookings/metrics', show: can.viewDeliveries },
       ],
     },
     {
@@ -290,6 +292,7 @@ const Sidebar: React.FC = () => {
         { name: 'Fleet partners', href: '/fleets',             show: true },
         { name: 'Vehicles',       href: '/fleets/vehicles',    show: true },
         { name: 'Settlements',    href: '/fleets/settlements', show: true },
+        { name: 'Trip reconciliation', href: '/fleets/reconciliation', show: true },
       ],
     },
     {
@@ -311,6 +314,9 @@ const Sidebar: React.FC = () => {
       badge: counts.openTickets || undefined,
     },
     { name: 'Approvals', href: '/approvals', icon: ShieldCheck, show: can.managePartnerships },
+    { name: 'Reconciliation', href: '/reconciliation', icon: ShieldCheck, show: can.managePartnerships },
+    { name: 'Audit log', href: '/audit-log', icon: ShieldCheck, show: can.managePartnerships },
+    { name: 'Ops alerts', href: '/ops-alerts', icon: ShieldCheck, show: can.managePartnerships },
     { name: 'Payments',  href: '/payments',  icon: CreditCard, show: can.viewPayments  },
     { name: 'Payment providers', href: '/payment-providers', icon: ShieldCheck, show: can.viewPayments && can.viewGlobal },
     { name: 'Demo requests', href: '/demo-requests', icon: Inbox, show: can.managePartnerships },
@@ -325,7 +331,7 @@ const Sidebar: React.FC = () => {
   // Grouping for section labels
   const coreItems     = navigation.filter(i => i.show && ['/', '/users', '/feedback'].includes(i.href));
   const opsItems      = navigation.filter(i => i.show && ['/drivers', '/rides', '/partners', '/deliveries'].includes(i.href));
-  const financeItems  = navigation.filter(i => i.show && ['/wallets', '/payments', '/payment-providers', '/approvals'].includes(i.href));
+  const financeItems  = navigation.filter(i => i.show && ['/wallets', '/payments', '/payment-providers', '/approvals', '/reconciliation', '/ops-alerts', '/audit-log'].includes(i.href));
   const featureItems  = navigation.filter(i => i.show && ['/corporate'].includes(i.href));
   const partnerItems  = navigation.filter(i => i.show && ['/fleets', '/banks'].includes(i.href));
   const systemItems   = navigation.filter(i => i.show && ['/support/tickets', '/demo-requests', '/analytics', '/countries', '/country-settings', '/staff', '/settings', '/settings/maps'].includes(i.href));

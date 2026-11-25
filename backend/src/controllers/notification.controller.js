@@ -99,4 +99,39 @@ exports.getUnreadCount = async (req, res) => {
   }
 };
 
+// ─── WP-08: push device tokens ────────────────────────────────────────────────
+const PLATFORMS = ['ios', 'android', 'web'];
+const cleanStr = (v, max) => (v == null ? null : String(v).trim().slice(0, max) || null);
+
+/** POST /notifications/devices — register or refresh. The token is unique: it is reassigned to the current user and un-revoked. */
+exports.registerDevice = async (req, res) => {
+  if (typeof req.body?.token !== 'string') throw new AppError('token is required', 400);
+  const token = cleanStr(req.body.token, 4096);
+  const platform = String(req.body?.platform || '').toLowerCase();
+  if (!token) throw new AppError('token is required', 400);
+  if (!PLATFORMS.includes(platform)) throw new AppError('platform must be ios, android or web', 400);
+  const fields = { userId: req.user.id, platform, appVariant: cleanStr(req.body?.appVariant, 40), deviceId: cleanStr(req.body?.deviceId, 200), lastSeenAt: new Date(), revokedAt: null };
+  let device;
+  try {
+    device = await prisma.deviceToken.upsert({ where: { token }, create: { token, ...fields }, update: fields });
+  } catch (e) {
+    if (e.code !== 'P2002') throw e;               // concurrent first registration of the same token: the row exists now, update it
+    device = await prisma.deviceToken.update({ where: { token }, data: fields });
+  }
+  if (fields.deviceId) {                            // one active token per physical device and user: a rotated token replaces the old one
+    await prisma.deviceToken.updateMany({ where: { userId: req.user.id, deviceId: fields.deviceId, revokedAt: null, token: { not: token } }, data: { revokedAt: new Date() } });
+  }
+  res.status(200).json({ success: true, data: { device: { id: device.id, platform: device.platform, appVariant: device.appVariant, lastSeenAt: device.lastSeenAt } } });
+};
+
+/** DELETE /notifications/devices — revoke on logout. Body or query: { token } or { deviceId }. Only the caller's own tokens. */
+exports.unregisterDevice = async (req, res) => {
+  const token = cleanStr(req.body?.token ?? req.query?.token, 4096);
+  const deviceId = cleanStr(req.body?.deviceId ?? req.query?.deviceId, 200);
+  if (!token && !deviceId) throw new AppError('token or deviceId is required', 400);
+  const where = { userId: req.user.id, revokedAt: null, ...(token ? { token } : { deviceId }) };
+  const { count } = await prisma.deviceToken.updateMany({ where, data: { revokedAt: new Date() } });
+  res.status(200).json({ success: true, data: { revoked: count } });
+};
+
 module.exports = exports;

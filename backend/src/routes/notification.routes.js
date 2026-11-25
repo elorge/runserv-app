@@ -7,6 +7,9 @@ const router = express.Router();
 
 router.use(authenticate);
 
+router.post('/devices', notificationController.registerDevice);
+router.delete('/devices', notificationController.unregisterDevice);
+
 router.get('/', notificationController.getNotifications);
 
 router.get('/count', notificationController.getUnreadCount);

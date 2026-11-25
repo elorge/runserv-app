@@ -1,7 +1,7 @@
 // backend/src/controllers/wallet.controller.js
 
 const prisma = require('../lib/prisma');
-const { debitWallet, creditWallet, claim, withClaim } = require('../services/walletOps');
+const { debitWallet, creditWallet, creditOp, claim, withClaim } = require('../services/walletOps');
 const { validationResult } = require('express-validator');
 const { AppError } = require('../middleware/errorHandler');
 const paymentService = require('../services/payment.service');
@@ -193,8 +193,9 @@ exports.verifyPaystackTopup = async (req, res) => {
     orderBy: { createdAt: 'desc' },
   });
 
+  const _cr1 = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: amount, refType: 'TOPUP_PAYSTACK', refId: realRef, memo: 'Wallet top-up', idempotencyKey: `TOPUP_PAYSTACK:${realRef}` });
   const _claimed1 = await withClaim(prisma, pendingMatch?.id, [
-    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    _cr1.update,
     pendingMatch
       ? prisma.walletTransaction.update({
           where: { id: pendingMatch.id },
@@ -217,6 +218,7 @@ exports.verifyPaystackTopup = async (req, res) => {
             provider:    'paystack',
           },
         }),
+    _cr1.ledger,
   ]);
   if (!_claimed1) return res.status(200).json({ success: true, message: 'Already processed' });
   const [updatedWallet, walletTx] = _claimed1;
@@ -340,8 +342,9 @@ exports.verifyTopUp = async (req, res) => {
     return res.status(200).json({ success: true, message: 'Already processed' });
   }
 
+  const _cr2 = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: amount, refType: 'TOPUP_PAYSTACK_WEBHOOK', refId: reference, memo: 'Wallet top-up', idempotencyKey: `TOPUP_PAYSTACK_WEBHOOK:${reference}` });
   if (!(await withClaim(prisma, pendingMatch?.id, [
-    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    _cr2.update,
     pendingMatch
       ? prisma.walletTransaction.update({
           where: { id: pendingMatch.id },
@@ -358,6 +361,7 @@ exports.verifyTopUp = async (req, res) => {
             provider:    'paystack',
           },
         }),
+    _cr2.ledger,
   ]))) return res.status(200).json({ success: true, message: 'Already processed' });
 
   await notificationService.notify({
@@ -492,12 +496,14 @@ const creditOrangeTopUp = async (orderId) => {
     return { ok: false, reason: `Orange reported status ${status.status}` };
   }
 
+  const _cr3 = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: pending.amount, refType: 'TOPUP_ORANGE', refId: pending.id, memo: 'Wallet top-up', idempotencyKey: `TOPUP_ORANGE:${pending.id}` });
   const _c3 = await withClaim(prisma, pending.id, [
-    prisma.wallet.update({ where: { id: wallet.id }, data: { balance: { increment: pending.amount } } }),
+    _cr3.update,
     prisma.walletTransaction.update({
       where: { id: pending.id },
       data:  { status: 'COMPLETED', providerRef: status.txnId ?? pending.providerRef },
     }),
+    _cr3.ledger,
   ]);
   if (!_c3) return { ok: true, alreadyProcessed: true };
   const [updatedWallet] = _c3;
@@ -645,8 +651,9 @@ exports.verifyFlutterwaveTopup = async (req, res) => {
   if (userId !== req.user.id) throw new AppError('This payment does not belong to your account', 403);
   const wallet     = myWallet;
 
+  const _cr4 = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: amount, refType: 'TOPUP_FLUTTERWAVE', refId: verifyRef, memo: 'Wallet top-up', idempotencyKey: `TOPUP_FLUTTERWAVE:${verifyRef}` });
   const _c4 = await withClaim(prisma, existing?.id, [
-    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    _cr4.update,
     existing
       ? prisma.walletTransaction.update({
           where: { id: existing.id },
@@ -663,6 +670,7 @@ exports.verifyFlutterwaveTopup = async (req, res) => {
             provider:    'flutterwave',
           },
         }),
+    _cr4.ledger,
   ]);
   if (!_c4) return res.status(200).json({ success: true, message: 'Already processed' });
   const [updatedWallet, walletTx] = _c4;
@@ -733,8 +741,9 @@ exports.verifyFlutterwaveWebhook = async (req, res) => {
     return res.sendStatus(200);
   }
 
+  const _cr5 = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: amount, refType: 'TOPUP_FLUTTERWAVE_WEBHOOK', refId: txRef, memo: 'Wallet top-up', idempotencyKey: `TOPUP_FLUTTERWAVE_WEBHOOK:${txRef}` });
   if (!(await withClaim(prisma, existing?.id, [
-    prisma.wallet.update({ where: { userId }, data: { balance: { increment: amount } } }),
+    _cr5.update,
     existing
       ? prisma.walletTransaction.update({
           where: { id: existing.id },
@@ -751,6 +760,7 @@ exports.verifyFlutterwaveWebhook = async (req, res) => {
             provider: 'flutterwave',
           },
         }),
+    _cr5.ledger,
   ]))) return res.sendStatus(200);
 
   await notificationService.notify({
@@ -799,7 +809,7 @@ exports.transfer = async (req, res) => {
   const reference = `TRF-${Date.now()}-${req.user.id.slice(0, 6)}`;
 
   await prisma.$transaction(async (tx) => {
-    await debitWallet(tx, { userId: req.user.id }, amount);
+    await debitWallet(tx, { id: senderWallet.id }, amount, { currency: senderWallet.currency, refType: 'TRANSFER_SENT', refId: reference, actor: req.user.id, memo: 'Wallet transfer (pending approval)', idempotencyKey: `TRANSFER_SENT:${reference}` });
     const _r = [null];
     _r.push(await tx.transfer.create({
       data: {
@@ -1006,7 +1016,7 @@ exports.withdraw = async (req, res) => {
   // ← CHANGED — capture the transaction results (was previously discarded)
   // so we can attach the created Payout's id to the audit log entry below.
   const [, , payoutRecord] = await prisma.$transaction(async (tx) => {
-    await debitWallet(tx, { userId: req.user.id }, amount);
+    await debitWallet(tx, { id: wallet.id }, amount, { currency: wallet.currency, refType: 'WITHDRAWAL', refId: reference, actor: req.user.id, memo: 'Withdrawal request', idempotencyKey: `WITHDRAWAL_DEBIT:${reference}` });
     const _r = [null];
     _r.push(await tx.walletTransaction.create({
       data: {
@@ -1344,7 +1354,7 @@ exports.adminRejectPayout = async (req, res) => {
   await prisma.$transaction(async (tx) => {
     const ok = await claim(tx.payout, { id, status: payout.status, updatedAt: payout.updatedAt }, { status: 'FAILED', failureReason: reason, processedAt: new Date() });
     if (!ok) throw new AppError('This payout was changed by someone else. Refresh the list.', 409);
-    await creditWallet(tx, { id: wallet.id }, refundAmount, { currency: wallet.currency, refType: 'PAYOUT_REFUND', refId: id, memo: reason, actor: req.user.id });
+    await creditWallet(tx, { id: wallet.id }, refundAmount, { currency: wallet.currency, refType: 'PAYOUT_REFUND', refId: id, memo: reason, actor: req.user.id, idempotencyKey: `PAYOUT_REFUND:${id}` });
     await tx.walletTransaction.updateMany({ where: { reference: payout.reference }, data: { status: 'FAILED' } });
     await tx.walletTransaction.create({
       data: {
@@ -1454,7 +1464,7 @@ exports.adminApproveTransfer = async (req, res) => {
   await prisma.$transaction(async (tx) => {
     if (!(await claim(tx.transfer, { reference, status: 'PENDING' }, { status: 'COMPLETED' }))) throw new AppError('Transfer already processed', 409);
     await tx.walletTransaction.updateMany({ where: { reference, type: 'DEBIT', status: 'PENDING' }, data: { status: 'COMPLETED' } });
-    await creditWallet(tx, { id: recipientWallet.id }, transfer.amount, { currency: recipientWallet.currency, refType: 'TRANSFER_RECEIVED', refId: reference, actor: req.user.id });
+    await creditWallet(tx, { id: recipientWallet.id }, transfer.amount, { currency: recipientWallet.currency, refType: 'TRANSFER_RECEIVED', refId: reference, actor: req.user.id, idempotencyKey: `TRANSFER_RECEIVED:${reference}` });
     await tx.walletTransaction.create({
       data: {
         walletId:    recipientWallet.id,
@@ -1547,7 +1557,7 @@ exports.adminRejectTransfer = async (req, res) => {
 
   await prisma.$transaction(async (tx) => {
     if (!(await claim(tx.transfer, { reference, status: 'PENDING' }, { status: 'FAILED' }))) throw new AppError('Transfer already processed', 409);
-    await creditWallet(tx, { id: senderWallet.id }, transfer.amount, { currency: senderWallet.currency, refType: 'TRANSFER_REFUND', refId: reference, actor: req.user.id });
+    await creditWallet(tx, { id: senderWallet.id }, transfer.amount, { currency: senderWallet.currency, refType: 'TRANSFER_REFUND', refId: reference, actor: req.user.id, idempotencyKey: `TRANSFER_REFUND:${reference}` });
     await tx.walletTransaction.updateMany({ where: { reference, type: 'DEBIT', status: 'PENDING' }, data: { status: 'FAILED' } });
     await tx.walletTransaction.create({
       data: {
@@ -1829,9 +1839,11 @@ exports.adminReconcileTopUp = async (req, res) => {
     throw err;
   }
 
+  const _cr6 = creditOp(prisma, { walletId: tx.wallet.id, currency: tx.wallet.currency, amount: tx.amount, refType: 'TOPUP_ADMIN_VERIFIED', refId: tx.reference, memo: 'Wallet top-up', idempotencyKey: `TOPUP_ADMIN_VERIFIED:${tx.reference}` });
   const _c6 = await withClaim(prisma, tx.id, [
-    prisma.wallet.update({ where: { id: tx.wallet.id }, data: { balance: { increment: tx.amount } } }),
+    _cr6.update,
     prisma.walletTransaction.update({ where: { id: tx.id }, data: { status: 'COMPLETED' } }),
+    _cr6.ledger,
   ]);
   if (!_c6) throw new AppError('This top-up was already processed.', 409);
   const [updatedWallet, updatedTx] = _c6;

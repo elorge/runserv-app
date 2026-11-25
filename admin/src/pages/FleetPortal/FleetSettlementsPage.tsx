@@ -30,6 +30,7 @@ const StatementModal: React.FC<{ id: string; onClose: () => void; onChanged: () 
       {s && data && (
         <div className="space-y-4 text-sm">
           <div className="flex flex-wrap items-center gap-3"><StatusBadge status={s.status} /><span className="text-gray-600">{periodText(s)}</span>{s.paidAt && <span className="text-gray-500">Paid {fmtDate(s.paidAt)}</span>}</div>
+          {s.status === 'PAID' && s.paymentReference && <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-emerald-900"><p className="font-semibold">Payment record</p><p className="text-xs mt-1">Reference <span className="font-mono">{s.paymentReference}</span>{s.paymentMethod ? ` · ${label(s.paymentMethod)}` : ''}{s.paidAmount != null ? ` · ${money(s.paidAmount, s.currency)}` : ''}{s.payoutAccountMasked ? ` · to ${s.payoutAccountMasked}` : ''}</p></div>}
           <dl className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {([['Gross fares', money(s.grossAmount, s.currency)], ['Runserv fee', `− ${money(s.platformFeeAmount, s.currency)}`], ['Adjustments', money(s.adjustmentsAmount, s.currency)], ['Net payable', money(s.netAmount, s.currency)]] as [string, string][]).map(([k, v]) => (
               <div key={k} className="rounded-lg border border-gray-100 p-3"><dt className="text-xs text-gray-500">{k}</dt><dd className="font-semibold">{v}</dd></div>))}

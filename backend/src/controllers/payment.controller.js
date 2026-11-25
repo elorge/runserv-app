@@ -1,6 +1,6 @@
 // backend/src/controllers/payment.controller.js
 const prisma = require('../lib/prisma');
-const { debitWallet } = require('../services/walletOps');
+const { debitWallet, creditWallet, creditOp } = require('../services/walletOps');
 const { validationResult } = require('express-validator');
 const { AppError } = require('../middleware/errorHandler');
 const paymentService = require('../services/payment.service');
@@ -633,7 +633,7 @@ exports.processWalletPayment = async (req, res) => {
     earnerWallet = await prisma.wallet.findUnique({ where: { userId: earningsUserId } });
     if (earnerWallet) {
       txns.push(
-        (tx) => tx.wallet.update({ where: { userId: earningsUserId }, data: { balance: { increment: earnings } } }),
+        async (tx) => { await creditWallet(tx, { id: earnerWallet.id }, earnings, { currency: earnerWallet.currency, refType: 'TRIP_EARNING', refId: rideId || deliveryId, actor: req.user.id, memo: rideId ? 'Ride earnings' : 'Delivery earnings', idempotencyKey: `TRIP_EARNING_CREDIT:${rideId || deliveryId}` }); return null; },
         (tx) => tx.walletTransaction.create({
           data: {
             walletId: earnerWallet.id,
@@ -649,7 +649,7 @@ exports.processWalletPayment = async (req, res) => {
   }
 
   const results = await prisma.$transaction(async (tx) => {
-    await debitWallet(tx, { userId: req.user.id }, amount); // one conditional update: cannot overdraw even under parallel requests
+    await debitWallet(tx, { id: wallet.id }, amount, { currency: wallet.currency, refType: 'TRIP_PAYMENT', refId: rideId || deliveryId, actor: req.user.id, memo: 'Wallet payment for trip', idempotencyKey: `TRIP_PAYMENT_DEBIT:${rideId || deliveryId}` }); // one conditional update: cannot overdraw even under parallel requests
     const out = [await tx.wallet.findUnique({ where: { userId: req.user.id } })];
     for (const run of txns) out.push(await run(tx));
     return out;
@@ -721,8 +721,9 @@ exports.requestRefund = async (req, res) => {
     const wallet = await prisma.wallet.findUnique({ where: { userId: req.user.id } });
     const refundAmount = amount || payment.amount;
 
+    const _rf = creditOp(prisma, { walletId: wallet.id, currency: wallet.currency, amount: refundAmount, refType: 'PAYMENT_REFUND_SELF', refId: id, actor: req.user.id, memo: 'Self-service refund', idempotencyKey: `PAYMENT_REFUND_SELF:${id}` });
     await prisma.$transaction([
-      prisma.wallet.update({ where: { userId: req.user.id }, data: { balance: { increment: refundAmount } } }),
+      _rf.update,
       prisma.payment.update({ where: { id }, data: { status: 'REFUNDED', refundAmount, refundedAt: new Date() } }),
       prisma.walletTransaction.create({
         data: {
@@ -733,7 +734,8 @@ exports.requestRefund = async (req, res) => {
           status: 'COMPLETED',
           reference: `REFUND-${id}`
         }
-      })
+      }),
+      _rf.ledger
     ]);
 
     // Self-service refund, distinct from admin.controller.js's

@@ -7,10 +7,11 @@ const UNIQUE = {
   guestIdentity: [['phone'], ['userId'], ['email']],
   guestSession: [['tokenHash']],
   payment: [['deliveryId'], ['transactionId']],
-  smsOutbox: [['kind', 'bookingId']],
+  smsOutbox: [['kind', 'bookingId'], ['kind', 'deliveryId'], ['idempotencyKey']],
   emailQuotaWindow: [['provider', 'windowKey']],
   emailWebhookEvent: [['provider', 'eventKey']],
   emailProviderControl: [['provider']],
+  deviceToken: [['token']],
   guestBooking: [['reference'], ['quoteId'], ['trackingTokenHash'], ['identityId', 'idempotencyKey'], ['rideId'], ['deliveryId']],
 };
 const DEFAULTS = {
@@ -19,7 +20,10 @@ const DEFAULTS = {
   emailOutbox: () => ({ status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), slotHeld: false, provider: null, routeReason: null, providerMessageId: null, errorCategory: null, lastError: null, deliveryStatus: null, sentAt: null, updatedAt: new Date() }),
   emailQuotaWindow: () => ({ reserved: 0, accepted: 0, exhaustedAt: null, unhealthyUntil: null }),
   emailProviderControl: () => ({ paused: false, pausedAt: null, pausedBy: null }),
-  smsOutbox: () => ({ status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), lastError: null, sentAt: null, toPhone: null, updatedAt: new Date() }),
+  opsAlert: () => ({ status: 'OPEN', severity: 'WARNING', occurrences: 1, attempts: 0, escalatedAt: null, firstNotifiedAt: null, lastNotifiedAt: null }),
+  opsAlertDelivery: () => ({ status: 'PENDING', attempts: 0, round: 0, lastError: null, nextAttemptAt: null, sentAt: null }),
+  deviceToken: () => ({ revokedAt: null }),
+  smsOutbox: () => ({ status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), lastError: null, sentAt: null, toPhone: null, providerMessageId: null, deliveryStatus: null, updatedAt: new Date() }),
   guestSession: () => ({ revokedAt: null }),
   guestIdentity: () => ({ convertedAt: null, blockedAt: null, blockReason: null, email: null, contactPhone: null, verifiedChannel: 'PHONE', emailVerifiedAt: null, phoneVerifiedAt: null }),
   guestBooking: () => ({ trackingRevokedAt: null }),
@@ -90,11 +94,12 @@ const makeFakeGuestPrisma = (seed = {}) => {
       create: async ({ data }) => { const row = { id: crypto.randomUUID(), createdAt: new Date(), ...(DEFAULTS[name]?.() || {}), ...data }; checkUnique(row); t(name).push(row); if (name === 'guestAuditEvent') calls.audit.push(row); return clone(row); },
       update: async ({ where, data }) => { const row = t(name).find((r) => match(r, where)); if (!row) { const e = new Error('Record not found'); e.code = 'P2025'; throw e; } const next = { ...row }; apply(next, data); checkUnique(next, row); Object.assign(row, next); return clone(row); },
       updateMany: async ({ where, data }) => { const rows = t(name).filter((r) => match(r, where)); rows.forEach((r) => apply(r, data)); return { count: rows.length }; },
+      upsert: async ({ where, create, update }) => { const row = t(name).find((r) => match(r, where)); if (row) { const next = { ...row }; apply(next, update); checkUnique(next, row); Object.assign(row, next); return clone(row); } const nr = { id: crypto.randomUUID(), createdAt: new Date(), ...(DEFAULTS[name]?.() || {}), ...create }; checkUnique(nr); t(name).push(nr); return clone(nr); },
       delete: async ({ where }) => { const i = t(name).findIndex((r) => match(r, where)); if (i >= 0) t(name).splice(i, 1); return {}; },
     };
   };
   const fake = { _t: t, _calls: calls };
-  ['user', 'guestIdentity', 'guestOtp', 'guestSession', 'guestBooking', 'smsOutbox', 'emailOutbox', 'emailQuotaWindow', 'emailProviderControl', 'emailWebhookEvent', 'guestAuditEvent', 'ride', 'delivery', 'driverProfile', 'deliveryPartnerProfile', 'payment', 'commissionLedger'].forEach((n) => { fake[n] = model(n); });
+  ['user', 'guestIdentity', 'guestOtp', 'guestSession', 'guestBooking', 'smsOutbox', 'emailOutbox', 'emailQuotaWindow', 'emailProviderControl', 'emailWebhookEvent', 'guestAuditEvent', 'ride', 'delivery', 'driverProfile', 'deliveryPartnerProfile', 'payment', 'commissionLedger', 'notification', 'opsAlert', 'opsAlertDelivery', 'deviceToken', 'activityLog'].forEach((n) => { fake[n] = model(n); });
   // Advisory locks: like pg_advisory_xact_lock, a key is held until the surrounding transaction ends and other transactions queue behind it.
   const lockTails = new Map();
   fake.$executeRaw = async () => 0;                              // outside a transaction there is nothing to lock

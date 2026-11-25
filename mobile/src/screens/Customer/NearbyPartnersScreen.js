@@ -1,5 +1,6 @@
 // mobile/src/screens/Customer/NearbyPartnersScreen.js
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { recipientEmailError, recipientEmailPatch, recipientEmailServerError } from '../../utils/recipientEmail';
 import {
   View, Text, StyleSheet, TouchableOpacity, FlatList,
   StatusBar, Dimensions, Animated, ActivityIndicator,
@@ -463,6 +464,8 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
   // Editable fields
   const [pickupContact,  setPickupContact]  = useState(routeParams.pickupContact      ?? '');
   const [dropoffContact, setDropoffContact] = useState(routeParams.dropoffContact     ?? '');
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [recipientEmailErr, setRecipientEmailErr] = useState(null);
   const [pkgDescription, setPkgDescription] = useState(routeParams.packageDescription ?? '');
   const [pkgWeight,      setPkgWeight]      = useState(routeParams.packageWeight      ? String(routeParams.packageWeight) : '');
   const [notes,          setNotes]          = useState(routeParams.packageNotes       ?? '');
@@ -509,8 +512,8 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
 
   // Memoised InputRow – must be defined BEFORE any early return
   const InputRow = useCallback(
-    ({ label, value, onChangeText, placeholder, keyboardType = 'default', multiline = false, maxLength }) => (
-      <View style={[inpS.wrap, { backgroundColor: theme.backgroundAlt, borderColor: theme.border }]}>
+    ({ label, value, onChangeText, placeholder, keyboardType = 'default', multiline = false, maxLength, autoCapitalize, error }) => (
+      <View style={[inpS.wrap, { backgroundColor: theme.backgroundAlt, borderColor: error ? '#DC2626' : theme.border }]}>
         <Text style={[inpS.label, { color: theme.hint }]}>{label}</Text>
         <TextInput
           style={[inpS.input, { color: theme.foreground }]}
@@ -519,9 +522,12 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
           placeholder={placeholder}
           placeholderTextColor={theme.hint}
           keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={autoCapitalize === 'none' ? false : undefined}
           multiline={multiline}
           maxLength={maxLength}
         />
+        {error ? <Text accessibilityLiveRegion="polite" style={{ color: '#DC2626', fontSize: 11, marginTop: 3 }}>{error}</Text> : null}
       </View>
     ),
     [theme]
@@ -553,6 +559,8 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
     if (!dropoffContact.trim()) {
       Alert.alert(t('nearbyPartners.missingDropoffContactTitle'), t('nearbyPartners.missingDropoffContactBody')); return;
     }
+    const emailErr = recipientEmailError(recipientEmail);
+    if (emailErr) { setRecipientEmailErr(emailErr); return; }
     if (!pkgDescription.trim()) {
       Alert.alert(t('nearbyPartners.missingPackageDescTitle'), t('nearbyPartners.missingPackageDescBody')); return;
     }
@@ -581,6 +589,7 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
         dropoffLat:         dLat,
         dropoffLng:         dLng,
         dropoffContact:     dropoffContact.trim(),
+        ...recipientEmailPatch(recipientEmail),
         packageDescription: pkgDescription.trim(),
         packageWeight:      weight,
         notes:              notes.trim(),
@@ -588,7 +597,7 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
         partnerId:          partner.partnerId,
       };
 
-      console.log('[ConfirmSheet] requesting delivery with payload:', JSON.stringify(payload, null, 2));
+      console.log('[ConfirmSheet] requesting delivery with payload:', JSON.stringify({ ...payload, recipientEmail: payload.recipientEmail ? '[set]' : undefined }, null, 2));   // never log the address
 
       const res = await deliveryAPI.requestDelivery(payload);
 
@@ -600,6 +609,8 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
       }
       onSuccess(delivery);
     } catch (err) {
+      const emailFieldErr = recipientEmailServerError(err);
+      if (emailFieldErr) { setRecipientEmailErr(emailFieldErr); setRequesting(false); return; }   // inline field error, no popup
       const msg =
         err?.response?.data?.message ??
         err?.data?.message           ??
@@ -688,6 +699,15 @@ const ConfirmSheet = ({ partner, routeParams, onClose, onSuccess, theme }) => {
                 value={dropoffContact}
                 onChangeText={setDropoffContact}
                 placeholder={t('nearbyPartners.nameOrPhonePlaceholder')}
+              />
+              <InputRow
+                label="RECIPIENT EMAIL (optional)"
+                value={recipientEmail}
+                onChangeText={(v) => { setRecipientEmail(v); setRecipientEmailErr(null); }}
+                placeholder="We email them the hand-over code"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                error={recipientEmailErr}
               />
               <InputRow
                 label={t('nearbyPartners.packageDescriptionLabel')}

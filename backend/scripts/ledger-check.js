@@ -1,21 +1,19 @@
 #!/usr/bin/env node
-// scripts/ledger-check.js — run daily (and after any incident). Exits 1 if the books do not add up.
-//   1. every ledger event balances (debits = credits)            → view ledger_unbalanced_groups must be empty
-//   2. every wallet's balance column equals what the ledger says → only for wallets that have ledger entries
+// scripts/ledger-check.js — run daily (and after any incident, and as a go-live gate). Exits 1 on ANY exception:
+//   · an unbalanced ledger event                      · a wallet/company balance that differs from its ledger, by currency
+//   · a non-zero balance with no ledger rows at all   · ledger entries in the wrong currency or on an account that does not exist
+// It uses the same query set as the daily reconciliation job (ledgerReconciliation.service.findExceptions), so the two cannot disagree.
 'use strict';
 try { require('dotenv').config(); } catch { /* optional */ }
 const prisma = require('../src/lib/prisma');
+const { findExceptions } = require('../src/services/ledgerReconciliation.service');
 (async () => {
-  let bad = 0;
-  const groups = await prisma.$queryRawUnsafe('SELECT * FROM ledger_unbalanced_groups LIMIT 50');
-  if (groups.length) { bad++; console.error(`✖ ${groups.length} unbalanced ledger event(s):`, groups.slice(0, 5)); } else console.log('✔ every ledger event balances');
-  const rows = await prisma.$queryRawUnsafe(`
-    SELECT w.id, w.balance AS balance, SUM(CASE WHEN l.direction='CREDIT' THEN l.amount ELSE -l.amount END) AS ledger
-      FROM "Wallet" w JOIN "LedgerEntry" l ON l.account = 'WALLET:' || w.id
-     GROUP BY w.id, w.balance
-    HAVING w.balance <> SUM(CASE WHEN l.direction='CREDIT' THEN l.amount ELSE -l.amount END)`);
-  // A wallet that also moved through code paths not yet posting to the ledger will differ; list them so they can be reviewed.
-  if (rows.length) console.warn(`ℹ ${rows.length} wallet(s) differ from their ledger (expected until every money path posts to the ledger):`, rows.slice(0, 5));
+  const { wallets, companies, exceptions } = await findExceptions();
+  console.log(`Checked ${wallets.length} wallet(s) and ${companies.length} company wallet(s).`);
+  if (!exceptions.length) { console.log('✔ ledger balanced; every balance equals its ledger; no stray entries'); await prisma.$disconnect(); process.exit(0); }
+  const byType = exceptions.reduce((m, e) => ({ ...m, [e.type]: (m[e.type] || 0) + 1 }), {});
+  console.error(`✖ ${exceptions.length} exception(s):`, byType);
+  console.error(exceptions.slice(0, 20));
   await prisma.$disconnect();
-  process.exit(bad ? 1 : 0);
+  process.exit(1);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -11,7 +11,7 @@ const { logActivity } = require('../utils/auditLog');
 const STAFF_ROLES = ['ADMIN', 'SUPER_ADMIN', 'MODERATOR', 'SUPPORT'];
 const isStaff = (role) => STAFF_ROLES.includes(role);
 /** OFF until the admin sign-in screen has its authenticator step; then set REQUIRE_STAFF_MFA=true to make it mandatory for staff. */
-const required = (env = process.env) => env.REQUIRE_STAFF_MFA === 'true';
+const required = (env = process.env) => require('../utils/flags').isTrue(env.REQUIRE_STAFF_MFA);
 
 // ── base32 (RFC 4648) ───────────────────────────────────────────────────────────────────────────
 const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';

@@ -132,6 +132,7 @@ async function verifyProof({ deliveryId, partnerId, code, photoUrl, ip }) {
     // The attempt that exhausts the budget leaves an auditable event for Admin review (parallel calls that all see the final count may each write one: harmless, never fewer than one).
     const locked = used >= MAX_POD_ATTEMPTS;
     if (locked && used === MAX_POD_ATTEMPTS) await identity.audit('POD_LOCKED', { ip, meta: { deliveryId: d.id, partnerId, attempts: used, needsAdminReview: true } });
+    if (locked && used === MAX_POD_ATTEMPTS) require('./opsAlert.service').recipientHandoverFailed({ deliveryId: d.id, why: 'CODE_LOCKED', category: 'LOCKED' }).catch(() => {});   // M16.2.2: tell operations now
     // NEUTRAL (guide §9): wrong, expired and replaced codes read the same, and the message never says how close a guess was or how many tries remain.
     throw err(locked ? LOCKED_MSG : NOT_ACCEPTED_MSG, locked ? 429 : 400, locked ? 'POD_LOCKED' : 'POD_WRONG');
   }

@@ -26,7 +26,7 @@ router.put('/documents/:id/review', write, id, [body('approved').isBoolean(), bo
 
 router.get('/settlements', c.listSettlements);
 router.post('/settlements', write, [body('fleetPartnerId').isString().notEmpty(), body('periodStart').isISO8601(), body('periodEnd').isISO8601(), body('adjustments').optional().isFloat()], validate, c.createSettlement);
-router.put('/settlements/:id/status', write, id, [body('status').isIn(['RECONCILING', 'APPROVED', 'PAID', 'DISPUTED', 'CANCELLED'])], validate, c.transitionSettlement);
+router.put('/settlements/:id/status', write, id, [body('status').isIn(['RECONCILING', 'APPROVED', 'PAID', 'DISPUTED', 'CANCELLED']), body('paymentReference').optional().isString().isLength({ max: 80 }), body('paymentMethod').optional().isString(), body('paidAmount').optional().isFloat({ min: 0 }), body('paymentProofRef').optional().isString().isLength({ max: 300 }), body('paymentNote').optional().isString().isLength({ max: 500 })], validate, c.transitionSettlement);
 
 router.get('/outbox/stats', c.outboxStats);
 router.get('/reconciliation/trips', [require('express-validator').query('since').optional().isISO8601(), require('express-validator').query('until').optional().isISO8601()], validate, c.reconcileTrips);

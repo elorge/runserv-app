@@ -84,6 +84,8 @@ model User {
   bankReferrals           BankReferral[]          @relation("BankReferralUser")
   bankRedemptions         BankRedemption[]        @relation("BankRedemptionUser")
 
+  sessionsRevokedAt       DateTime?               @db.Timestamptz(6) // WP-03: tokens issued before this are refused (log out everywhere)
+
   @@index([email])
   @@index([phone])
   @@index([role])
@@ -1130,6 +1132,8 @@ model OrgPayout {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model FleetPartner {
+  invitations         FleetInvitation[]
+  shifts              FleetShift[]
   id                  String                  @id @default(uuid())
   legalName           String
   tradingName         String?
@@ -1183,6 +1187,46 @@ model FleetPartnerUser {
 
   @@unique([fleetPartnerId, userId])
   @@index([userId, isActive])
+}
+
+/// Invitation of a person (by email) to a fleet's portal team. Only the SHA-256 of the token is stored.
+model FleetInvitation {
+  id               String       @id @default(uuid())
+  fleetPartnerId   String
+  email            String
+  role             FleetPartnerRole @default(VIEWER)
+  tokenHash        String       @unique
+  status           String       @default("PENDING")        // PENDING | ACCEPTED | REVOKED
+  expiresAt        DateTime     @db.Timestamptz(6)
+  invitedById      String
+  acceptedByUserId String?
+  acceptedAt       DateTime?    @db.Timestamptz(6)
+  createdAt        DateTime     @default(now()) @db.Timestamptz(6)
+  fleetPartner     FleetPartner @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+
+  @@index([fleetPartnerId, status])
+  @@index([email, status])
+}
+
+/// A scheduled working period of a driver on a fleet vehicle. Schedule only: it does not by itself allow or block dispatch.
+model FleetShift {
+  id             String       @id @default(uuid())
+  fleetPartnerId String
+  vehicleId      String
+  driverUserId   String
+  startsAt       DateTime     @db.Timestamptz(6)
+  endsAt         DateTime     @db.Timestamptz(6)
+  status         String       @default("SCHEDULED")        // SCHEDULED | CANCELLED
+  note           String?
+  createdById    String
+  cancelledById  String?
+  cancelledAt    DateTime?    @db.Timestamptz(6)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  fleetPartner   FleetPartner @relation(fields: [fleetPartnerId], references: [id], onDelete: Cascade)
+
+  @@index([fleetPartnerId, startsAt])
+  @@index([driverUserId, startsAt])
+  @@index([vehicleId, startsAt])
 }
 
 model FleetVehicle {
@@ -1275,6 +1319,14 @@ model FleetSettlement {
   status            BankSettlementStatus @default(PENDING)
   reference         String?              @unique
   paidAt            DateTime?            @db.Timestamptz(6)
+  // Payment evidence (required to mark PAID): what was sent, how, to which (masked) account, and who recorded it.
+  paymentReference  String?              @unique          // bank/transfer reference; unique so one transfer cannot settle two statements
+  paymentMethod     String?
+  paidAmount        Decimal?             @db.Decimal(14, 2)
+  paymentProofRef   String?                               // private-file reference of the bank advice / receipt (optional)
+  paymentNote       String?
+  paidById          String?
+  payoutAccountMasked String?                             // snapshot at payment time, e.g. "058 ••••1234"
   createdAt         DateTime             @default(now()) @db.Timestamptz(6)
   fleetPartner      FleetPartner         @relation(fields: [fleetPartnerId], references: [id], onDelete: Restrict)
 
@@ -2267,21 +2319,30 @@ model GuestAuditEvent {
 model SmsOutbox {
   id            String    @id @default(dbgenerated("(gen_random_uuid())::text"))
   kind          String
-  bookingId     String
+  bookingId     String?                                    // guest parcels; WP-07: registered parcels point at deliveryId instead
+  deliveryId    String?                                    // WP-07: registered customer's parcel (no guest booking)
   toPhone       String?
   toMasked      String
   countryCode   String?
-  status        String    @default("PENDING")
+  status        String    @default("PENDING")              // PENDING | PROCESSING | SENT | DEAD | SKIPPED
   attempts      Int       @default(0)
   nextAttemptAt DateTime  @default(now())
   lastError     String?
   sentAt        DateTime?
+  provider          String?                                // WP-07: e.g. termii
+  providerMessageId String?                                // WP-07: provider's message id (for delivery receipts / reconciliation)
+  deliveryStatus    String?                                // WP-07: ACCEPTED | DELIVERED | FAILED (provider receipt)
+  deliveryAt        DateTime? @db.Timestamptz(6)
+  idempotencyKey    String?   @unique                      // WP-07: e.g. RECIPIENT_CODE:<deliveryId>:<codeVersion>
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
   @@unique([kind, bookingId])
+  @@unique([kind, deliveryId])
   @@index([status, nextAttemptAt])
   @@index([bookingId])
+  @@index([deliveryId])
+  @@index([providerMessageId])
 }
 
 // ── M16.1: durable email outbox + two-provider quota routing ────────────────────────────────────────────────────────
@@ -2292,6 +2353,7 @@ model EmailOutbox {
   kind              String                                   // GUEST_OTP | RECIPIENT_CODE | RECIPIENT_CODE_REISSUED | GUEST_TRACKING
   otpId             String?
   bookingId         String?                                  // M16.2: RECIPIENT_CODE / GUEST_TRACKING rows point at the booking instead of an OTP challenge
+  deliveryId        String?                                  // M16.2.2 (Option B): RECIPIENT_CODE rows of a REGISTERED customer's parcel (no guest booking) point at the delivery
   toEmail           String?
   toMasked          String
   status            String    @default("PENDING")            // PENDING | PROCESSING | SENT | DEAD | SKIPPED
@@ -2312,6 +2374,7 @@ model EmailOutbox {
   @@index([status, nextAttemptAt])
   @@index([otpId])
   @@index([bookingId, kind, createdAt])
+  @@index([deliveryId, kind, createdAt])
   @@index([kind, status, createdAt])
   @@index([providerMessageId])
 }
@@ -2347,4 +2410,95 @@ model EmailWebhookEvent {
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
 
   @@unique([provider, eventKey])
+}
+
+// ── WP-08: push device tokens and durable operations alerts ──────────────────────────────────────────────────
+// One row per FCM/APNs token. A token belongs to exactly one user at a time: registering it from another account reassigns it.
+model DeviceToken {
+  id         String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId     String
+  platform   String    // ios | android | web
+  appVariant String?   // e.g. customer | driver | partner
+  token      String    @unique
+  deviceId   String?
+  lastSeenAt DateTime  @default(now()) @db.Timestamptz(6)
+  revokedAt  DateTime? @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([userId, revokedAt])
+  @@index([deviceId])
+}
+
+// Durable operations alert. At most one non-RESOLVED alert per dedupeKey (partial unique index in sql/m17_push_alerts.sql).
+model OpsAlert {
+  id               String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  kind             String
+  dedupeKey        String
+  severity         String    @default("WARNING") // INFO | WARNING | CRITICAL
+  title            String
+  message          String
+  data             Json?
+  status           String    @default("OPEN")    // OPEN | ACKNOWLEDGED | RESOLVED
+  occurrences      Int       @default(1)
+  attempts         Int       @default(0)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  lastSeenAt       DateTime  @default(now()) @db.Timestamptz(6)
+  firstNotifiedAt  DateTime? @db.Timestamptz(6)
+  lastNotifiedAt   DateTime? @db.Timestamptz(6)
+  escalatedAt      DateTime? @db.Timestamptz(6)
+  acknowledgedById String?
+  acknowledgedAt   DateTime? @db.Timestamptz(6)
+  resolvedById     String?
+  resolvedAt       DateTime? @db.Timestamptz(6)
+  resolutionNote   String?
+
+  @@index([status, createdAt])
+  @@index([dedupeKey, status])
+  @@index([kind])
+}
+
+model OpsAlertDelivery {
+  id            String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  alertId       String
+  channel       String    // IN_APP | WEBHOOK
+  round         Int       @default(0) // 0 = first notification, 1 = escalation
+  status        String    @default("PENDING") // PENDING | SENT | FAILED
+  attempts      Int       @default(0)
+  lastError     String?   // failure CATEGORY only, never provider text
+  nextAttemptAt DateTime? @db.Timestamptz(6)
+  sentAt        DateTime? @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([alertId])
+  @@index([status, nextAttemptAt])
+}
+
+// WP-01: one row per ledger/wallet reconciliation run (daily job or manual). Exceptions are listed, never silently ignored.
+model LedgerReconciliationRun {
+  id          String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  trigger     String    @default("SCHEDULED") // SCHEDULED | MANUAL
+  status      String    @default("RUNNING")   // RUNNING | OK | EXCEPTIONS | FAILED
+  startedAt   DateTime  @default(now()) @db.Timestamptz(6)
+  finishedAt  DateTime? @db.Timestamptz(6)
+  startedById String?
+  summary     Json?     // counts + liabilities per currency
+  exceptions  Json?     // capped list (first 200) of variances needing a human
+  error       String?
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+// WP-03: a token that was explicitly logged out. Looked up by jti (or the token's SHA-256 for tokens issued before jti existed).
+// Rows can be purged after expiresAt (the token would be refused as expired anyway).
+model RevokedToken {
+  id        String   @id // jti or sha256(token)
+  userId    String
+  reason    String   @default("LOGOUT")
+  expiresAt DateTime @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([userId])
+  @@index([expiresAt])
 }

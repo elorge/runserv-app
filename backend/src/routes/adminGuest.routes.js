@@ -38,6 +38,9 @@ router.post('/:id/recipient-notification/resend', authorize('ADMIN', 'SUPER_ADMI
 
 // M16.2.1: rotate is separate from resend; metrics and the attention list are read-only operations views.
 router.post('/:id/recipient-notification/rotate', authorize('ADMIN', 'SUPER_ADMIN'), param('id').isUUID(), body('reason').isString().trim().isLength({ min: 10, max: 200 }), body('confirm').isBoolean({ strict: true }), validate, c.recipientRotate);
+// M16.2.2 (Option B): the same two actions for a REGISTERED customer's parcel, addressed by delivery id.
+router.post('/deliveries/:id/recipient-notification/resend', authorize('ADMIN', 'SUPER_ADMIN'), param('id').isUUID(), body('reason').isString().trim().isLength({ min: 5, max: 200 }), validate, c.registeredResend);
+router.post('/deliveries/:id/recipient-notification/rotate', authorize('ADMIN', 'SUPER_ADMIN'), param('id').isUUID(), body('reason').isString().trim().isLength({ min: 10, max: 200 }), body('confirm').isBoolean({ strict: true }), validate, c.registeredRotate);
 router.get('/pilot-metrics', query('hours').optional().isInt({ min: 1, max: 2160 }), validate, c.pilotMetrics);
 router.get('/recipient-attention', c.recipientAttention);
 

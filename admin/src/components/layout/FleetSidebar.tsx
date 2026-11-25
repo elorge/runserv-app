@@ -1,7 +1,7 @@
 // Sidebar for people who belong to a Fleet Partner account. What shows depends on the role (see FleetPermissions).
 import React, { useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Car, Users, Route, Receipt, UserCog, Settings, LogOut, X, Truck } from 'lucide-react';
+import { LayoutDashboard, Car, Users, Route, Receipt, UserCog, Settings, LogOut, X, Truck, CalendarDays } from 'lucide-react';
 import { useUIStore } from '@/store/uiStore';
 import { useAuthStore } from '@/store/authStore';
 import { fleetPortalAPI } from '@/services/api/fleetPortal';
@@ -33,6 +33,7 @@ const FleetSidebar: React.FC = () => {
     { name: 'Drivers', href: '/fleet/drivers', icon: Users, show: !!(p?.assignDrivers || p?.seeDriverIdentity) },
     { name: 'Trips', href: '/fleet/trips', icon: Route, show: !!p?.seeTrips },
     { name: 'Settlements', href: '/fleet/settlements', icon: Receipt, show: !!p?.seeFinance },
+    { name: 'Shifts', href: '/fleet/shifts', icon: CalendarDays, show: !!p?.seeTrips },
     { name: 'Team', href: '/fleet/team', icon: UserCog, show: !!p?.manageUsers },
     { name: 'Settings', href: '/fleet/settings', icon: Settings, show: !!p?.manageSettings },
   ].filter((n) => n.show);

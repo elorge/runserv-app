@@ -549,7 +549,7 @@ exports.requestPayout = async (req, res) => {
   // ← CHANGED — capture the transaction results (was previously discarded)
   // so we can attach the created Payout's id to the audit log entry below.
   const [, , payoutRecord] = await prisma.$transaction(async (tx) => {
-    await debitWallet(tx, { userId: req.user.id }, amount);
+    await debitWallet(tx, { id: wallet.id }, amount, { currency: wallet.currency, refType: 'WITHDRAWAL', refId: reference, actor: req.user.id, memo: 'Withdrawal request', idempotencyKey: `WITHDRAWAL_DEBIT:${reference}` });
     const _r = [null];
     _r.push(await tx.walletTransaction.create({
       data: {

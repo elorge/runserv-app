@@ -51,6 +51,9 @@ export interface PortalVehicle {
   compliance: Compliance; assignments?: { id: string; driverUserId: string }[];
 }
 
+export interface FleetInvitation { id: string; email: string; role: FleetRole; status: 'PENDING' | 'ACCEPTED' | 'REVOKED'; expiresAt: string; createdAt: string; acceptedAt: string | null }
+export interface FleetShift { id: string; vehicleId: string; driverUserId: string; startsAt: string; endsAt: string; status: 'SCHEDULED' | 'CANCELLED'; note: string | null }
+
 export interface PortalAssignment {
   id: string; vehicleId: string; driverUserId: string; status: 'ACTIVE' | 'ENDED' | 'REVOKED'; startsAt: string; endsAt: string | null;
   vehicle: { id: string; registrationNumber: string; vehicleType: string; make: string; model: string };
@@ -67,6 +70,7 @@ export interface PortalTrip {
 export interface PortalSettlement {
   id: string; periodStart: string; periodEnd: string; grossAmount: Dec; platformFeeAmount: Dec; adjustmentsAmount: Dec; netAmount: Dec;
   currency: string; status: SettlementStatus; reference: string | null; paidAt: string | null; createdAt: string;
+  paymentReference?: string | null; paymentMethod?: string | null; paidAmount?: Dec | null; paymentProofRef?: string | null; paymentNote?: string | null; payoutAccountMasked?: string | null;
 }
 
 export interface TeamMember { id: string; role: FleetRole; isActive: boolean; invitedAt: string; acceptedAt: string | null; user: { id: string; firstName: string; lastName: string; email: string } }

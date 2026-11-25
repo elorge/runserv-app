@@ -1,5 +1,6 @@
 // mobile/src/screens/Customer/RequestDeliveryScreen.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { recipientEmailError, recipientEmailPatch, recipientEmailServerError } from '../../utils/recipientEmail';
 import {
   View, Text, TouchableOpacity, StyleSheet, TextInput,
   Dimensions, Animated, ScrollView, ActivityIndicator,
@@ -121,8 +122,8 @@ const pc = StyleSheet.create({
 });
 
 // ── PackageInput ──────────────────────────────────────────────────────────────
-const PackageInput = ({ label, icon, placeholder, value, onChangeText, keyboardType, multiline, theme, accentColor }) => (
-  <View style={[pi.wrap, { backgroundColor: theme.backgroundAlt, borderColor: theme.border }]}>
+const PackageInput = ({ label, icon, placeholder, value, onChangeText, keyboardType, multiline, theme, accentColor, autoCapitalize, error }) => (
+  <View style={[pi.wrap, { backgroundColor: theme.backgroundAlt, borderColor: error ? '#DC2626' : theme.border }]}>
     <View style={[pi.iconWrap, { backgroundColor: accentColor + '18' }]}>
       <Ionicons name={icon} size={14} color={accentColor} />
     </View>
@@ -135,10 +136,13 @@ const PackageInput = ({ label, icon, placeholder, value, onChangeText, keyboardT
         value={value}
         onChangeText={onChangeText}
         keyboardType={keyboardType ?? 'default'}
+        autoCapitalize={autoCapitalize}
+        autoCorrect={autoCapitalize === 'none' ? false : undefined}
         multiline={multiline}
         returnKeyType={multiline ? 'default' : 'done'}
         underlineColorAndroid="transparent"
       />
+      {error ? <Text accessibilityLiveRegion="polite" style={{ color: '#DC2626', fontSize: 11, marginTop: 3 }}>{error}</Text> : null}
     </View>
   </View>
 );
@@ -219,6 +223,8 @@ export default function RequestDeliveryScreen({ navigation }) {
 
   const [pickupContact,      setPickupContact]      = useState('');
   const [dropoffContact,     setDropoffContact]     = useState('');
+  const [recipientEmail,     setRecipientEmail]     = useState('');
+  const [recipientEmailErr,  setRecipientEmailErr]  = useState(null);
   const [packageDescription, setPackageDescription] = useState('');
   const [packageWeight,      setPackageWeight]      = useState('');
   const [packageNotes,       setPackageNotes]       = useState('');
@@ -481,6 +487,8 @@ export default function RequestDeliveryScreen({ navigation }) {
     if (!pickupCoords || !dropoffCoords) { Alert.alert(t('requestDelivery.setBothLocationsTitle'), t('requestDelivery.setBothLocationsBody')); return; }
     if (!pickupContact || !dropoffContact) { Alert.alert(t('requestDelivery.missingContactsTitle'), t('requestDelivery.missingContactsBody')); return; }
     if (!packageDescription) { Alert.alert(t('requestDelivery.missingPackageInfoTitle'), t('requestDelivery.missingPackageInfoBody')); return; }
+    const emailErr = recipientEmailError(recipientEmail);
+    if (emailErr) { setRecipientEmailErr(emailErr); return; }
     const km  = haversineKm(pickupCoords.lat, pickupCoords.lng, dropoffCoords.lat, dropoffCoords.lng);
     const wKg = parseFloat(packageWeight) || 0;
     setDistanceKm(km); setFeeEstimate(calcFee(km, wKg)); setEtaMinutes(Math.ceil(km / 0.4));
@@ -506,7 +514,7 @@ export default function RequestDeliveryScreen({ navigation }) {
       setScanning(false); setScanDone(true); setPartners([]);
       Animated.spring(sheetH, { toValue: SHEET_SNAP, tension: 60, friction: 12, useNativeDriver: false }).start();
     }
-  }, [pickupCoords, dropoffCoords, pickupContact, dropoffContact, packageDescription, packageWeight]);
+  }, [pickupCoords, dropoffCoords, pickupContact, dropoffContact, recipientEmail, packageDescription, packageWeight]);
 
   const confirmDelivery = async () => {
     if (!selectedPartner) { Alert.alert(t('requestDelivery.selectPartnerTitle'), t('requestDelivery.selectPartnerBody')); return; }
@@ -520,6 +528,7 @@ export default function RequestDeliveryScreen({ navigation }) {
       const res = await deliveryAPI.requestDelivery({
         pickupAddress,  pickupLat: pickupCoords.lat,  pickupLng: pickupCoords.lng,  pickupContact,
         dropoffAddress, dropoffLat: dropoffCoords.lat, dropoffLng: dropoffCoords.lng, dropoffContact,
+        ...recipientEmailPatch(recipientEmail),
         packageDescription, packageWeight: parseFloat(packageWeight) || 0,
         notes: packageNotes, estimatedFee: feeEstimate,
         partnerId: selectedPartner.partnerId,
@@ -533,6 +542,8 @@ export default function RequestDeliveryScreen({ navigation }) {
       if (newDeliveryId) socketService.joinRide(newDeliveryId);
       setStep(4);
     } catch (err) {
+      const emailFieldErr = recipientEmailServerError(err);
+      if (emailFieldErr) { setRecipientEmailErr(emailFieldErr); setStep(1); return; }   // inline field error on the form, not a popup
       if (handleOrgBookingError(err, { serviceType: 'DELIVERY', pickupAddress, dropoffAddress, estimatedFare: feeEstimate, payerChoice, onPaySelf: () => setPayerChoice(DEFAULT_PAYER) })) return;
       if (err?.message !== 'CANCELLED') Alert.alert(t('requestDelivery.requestFailedTitle'), err?.message ?? t('requestDelivery.couldNotPlaceDelivery'));
     } finally { setRequesting(false); }
@@ -735,6 +746,7 @@ export default function RequestDeliveryScreen({ navigation }) {
                 <Text style={[s.sectionLabel, { color: theme.hint }]}>CONTACT & PACKAGE</Text>
                 <PackageInput label={t('requestDelivery.pickupContactLabel')}      icon="call-outline"          placeholder="+234 801 234 5678"                    value={pickupContact}      onChangeText={setPickupContact}      keyboardType="phone-pad" theme={theme} accentColor={accentColor} />
                 <PackageInput label={t('requestDelivery.dropoffContactLabel')}    icon="call-outline"          placeholder="+234 801 234 5678"                    value={dropoffContact}     onChangeText={setDropoffContact}     keyboardType="phone-pad" theme={theme} accentColor={accentColor} />
+                <PackageInput label="RECIPIENT EMAIL (optional)" icon="mail-outline" placeholder="We email them the hand-over code" value={recipientEmail} onChangeText={(v) => { setRecipientEmail(v); setRecipientEmailErr(null); }} keyboardType="email-address" autoCapitalize="none" error={recipientEmailErr} theme={theme} accentColor={accentColor} />
                 <PackageInput label={t('requestDelivery.packageDescriptionLabel')} icon="cube-outline"          placeholder={t('requestDelivery.packageDescPlaceholder')} value={packageDescription} onChangeText={setPackageDescription}                         theme={theme} accentColor={accentColor} />
                 <View style={{ flexDirection: 'row', gap: 10 }}>
                   <View style={{ flex: 1 }}>

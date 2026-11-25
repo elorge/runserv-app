@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
-import toast from 'react-hot-toast';
-import { Button, Badge } from '@/components/common';
+import React from 'react';
+import { Badge } from '@/components/common';
+import HandoverExceptionPanel from './HandoverExceptionPanel';
+import { useAuth } from '@/hooks/useAuth';
 import SecureDocLink from '@/components/common/SecureDocLink';
-import { guestBookingsAPI } from '@/services/api/guestBookings';
 import type { GuestBookingDetail } from '@/types/guestBooking';
 
 interface Props { booking: GuestBookingDetail; canOverride: boolean; onChanged: () => void }
@@ -14,21 +14,10 @@ interface Props { booking: GuestBookingDetail; canOverride: boolean; onChanged: 
 const ProofPhotoViewer: React.FC<Props> = ({ booking, canOverride, onChanged }) => {
   const trip = booking.trip;
   const proof = booking.proof;
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
+  const { user } = useAuth();
   if (booking.service !== 'PARCEL' || !trip || !proof) return null;
 
   const overridable = proof.required && !proof.verified && !proof.failed;
-  const valid = reason.trim().length >= 10 && reason.trim().length <= 300;
-
-  const submit = async () => {
-    if (!valid || busy) return;
-    if (!window.confirm('Record proof of delivery as support? This is audited and lets the courier complete the delivery.')) return;
-    setBusy(true);
-    try { const r = await guestBookingsAPI.podOverride(trip.id, reason.trim()); toast.success(r.message || 'Proof recorded.'); setReason(''); onChanged(); }
-    catch (e: any) { toast.error(e?.response?.data?.message || 'Could not record the override.'); }
-    finally { setBusy(false); }
-  };
 
   return (
     <div className="space-y-3">
@@ -46,15 +35,7 @@ const ProofPhotoViewer: React.FC<Props> = ({ booking, canOverride, onChanged }) 
         </SecureDocLink>
       ) : <p className="text-sm text-gray-500">No proof photo was uploaded.</p>}
 
-      {canOverride && overridable ? (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-          <p className="mb-2 text-sm font-medium text-amber-900">Support override</p>
-          <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={300} aria-label="Override reason"
-            placeholder="Why is the hand-over being recorded without the code? (10–300 characters, stored in the audit trail)"
-            className="w-full rounded-md border border-gray-300 p-2 text-sm" />
-          <div className="mt-2 flex justify-end"><Button variant="danger" size="sm" disabled={!valid || busy} onClick={submit}>{busy ? 'Saving…' : 'Record proof as support'}</Button></div>
-        </div>
-      ) : null}
+      {canOverride && overridable && trip.status === 'IN_TRANSIT' ? <HandoverExceptionPanel deliveryId={trip.id} audit={booking.audit} currentUserId={user?.id} onChanged={onChanged} /> : null}
     </div>
   );
 };

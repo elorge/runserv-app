@@ -28,6 +28,8 @@ import GuestBookingLookup from '@/pages/GuestBookings/GuestBookingLookup';
 import GuestAbuse         from '@/pages/GuestBookings/GuestAbuse';
 import GuestSms           from '@/pages/GuestBookings/GuestSms';
 import GuestEmail         from '@/pages/GuestBookings/GuestEmail';
+import GuestAttention      from '@/pages/GuestBookings/GuestAttention';
+import GuestMetrics        from '@/pages/GuestBookings/GuestMetrics';
 import GuestBookingDetail from '@/pages/GuestBookings/GuestBookingDetail';
 import DeliveryDetails    from '@/pages/Deliveries/DeliveryDetails';
 import TicketList         from '@/pages/Support/TicketList';
@@ -62,12 +64,16 @@ import FleetList          from '@/pages/Fleets/FleetList';
 import FleetDetails       from '@/pages/Fleets/FleetDetails';
 import VehicleList        from '@/pages/Fleets/VehicleList';
 import FleetSettlements   from '@/pages/Fleets/FleetSettlements';
+import FleetTripReconciliation from '@/pages/Fleets/TripReconciliation';
 import BankList           from '@/pages/Banks/BankList';
 import CampaignList       from '@/pages/Banks/CampaignList';
 import CampaignDetails    from '@/pages/Banks/CampaignDetails';
 import BankSettlements    from '@/pages/Banks/BankSettlements';
 import BankReceipts       from '@/pages/Banks/BankReceipts';
 import Approvals          from '@/pages/Banks/Approvals';
+import Reconciliation     from '@/pages/Finance/Reconciliation';
+import OpsAlerts          from '@/pages/Alerts/OpsAlerts';
+import AuditLog           from '@/pages/Audit/AuditLog';
 import StatementImport    from '@/pages/Banks/StatementImport';
 import DemoRequests       from '@/pages/Settings/DemoRequests';
 import FleetOverview      from '@/pages/FleetPortal/FleetOverview';
@@ -77,6 +83,8 @@ import FleetDrivers       from '@/pages/FleetPortal/FleetDrivers';
 import FleetTrips         from '@/pages/FleetPortal/FleetTrips';
 import FleetSettlementsPage from '@/pages/FleetPortal/FleetSettlementsPage';
 import FleetTeam          from '@/pages/FleetPortal/FleetTeam';
+import FleetShifts        from '@/pages/FleetPortal/FleetShifts';
+import AcceptInvite       from '@/pages/FleetPortal/AcceptInvite';
 import FleetSettings      from '@/pages/FleetPortal/FleetSettings';
 import FleetApply         from '@/pages/FleetPortal/FleetApply';
 import PrivacyPolicy      from '@/pages/Legal/PrivacyPolicy';
@@ -174,6 +182,8 @@ function App() {
               <Route path="/fleet/trips"        element={<FleetRoute><FleetTrips /></FleetRoute>} />
               <Route path="/fleet/settlements"  element={<FleetRoute><FleetSettlementsPage /></FleetRoute>} />
               <Route path="/fleet/team"         element={<FleetRoute><FleetTeam /></FleetRoute>} />
+              <Route path="/fleet/shifts"       element={<FleetRoute><FleetShifts /></FleetRoute>} />
+              <Route path="/fleet/accept-invite" element={<AcceptInvite />} />
               <Route path="/fleet/settings"     element={<FleetRoute><FleetSettings /></FleetRoute>} />
             </>
           )}
@@ -216,6 +226,8 @@ function App() {
           <Route path="/guest-bookings/lookup"  element={<ProtectedRoute><GuestBookingLookup /></ProtectedRoute>} />
           <Route path="/guest-bookings/sms"     element={<ProtectedRoute><GuestSms /></ProtectedRoute>} />
           <Route path="/guest-bookings/email"   element={<ProtectedRoute><GuestEmail /></ProtectedRoute>} />
+          <Route path="/guest-bookings/attention" element={<ProtectedRoute><GuestAttention /></ProtectedRoute>} />
+          <Route path="/guest-bookings/metrics"  element={<ProtectedRoute><GuestMetrics /></ProtectedRoute>} />
           <Route path="/guest-bookings/abuse"   element={<ProtectedRoute><GuestAbuse /></ProtectedRoute>} />
           <Route path="/guest-bookings/:id"     element={<ProtectedRoute><GuestBookingDetail /></ProtectedRoute>} />
 
@@ -259,6 +271,7 @@ function App() {
               <Route path="/fleets"             element={<PartnershipsRoute><FleetList /></PartnershipsRoute>} />
               <Route path="/fleets/vehicles"    element={<PartnershipsRoute><VehicleList /></PartnershipsRoute>} />
               <Route path="/fleets/settlements" element={<PartnershipsRoute><FleetSettlements /></PartnershipsRoute>} />
+              <Route path="/fleets/reconciliation" element={<PartnershipsRoute><FleetTripReconciliation /></PartnershipsRoute>} />
               <Route path="/fleets/:id"         element={<PartnershipsRoute><FleetDetails /></PartnershipsRoute>} />
             </>
           )}
@@ -281,6 +294,9 @@ function App() {
           <Route path="/settings"  element={<ProtectedRoute><GeneralSettings /></ProtectedRoute>} />
           <Route path="/settings/maps" element={<ProtectedRoute><MapSettings /></ProtectedRoute>} />
           <Route path="/approvals" element={<PartnershipsRoute><Approvals /></PartnershipsRoute>} />
+          <Route path="/reconciliation" element={<PartnershipsRoute><Reconciliation /></PartnershipsRoute>} />
+          <Route path="/audit-log" element={<PartnershipsRoute><AuditLog /></PartnershipsRoute>} />
+          <Route path="/ops-alerts" element={<PartnershipsRoute><OpsAlerts /></PartnershipsRoute>} />
           <Route path="/demo-requests" element={<PartnershipsRoute><DemoRequests /></PartnershipsRoute>} />
 
           {/* Legal — public, no auth required */}

@@ -11,6 +11,17 @@ export const apiError = (e: any, fallback = 'Something went wrong') =>
 
 export interface VehicleQuery { status?: string; vehicleType?: string; fleetPartnerId?: string; q?: string; compliance?: string; page?: number; limit?: number }
 
+/** Required when marking a fleet settlement PAID. */
+export interface PaymentEvidence { paymentReference: string; paymentMethod: 'BANK_TRANSFER' | 'MOBILE_MONEY' | 'OTHER'; paidAmount: number; paymentNote?: string }
+
+export interface TripReconciliation {
+  window: { start: string; end: string }; checked: number; truncated: boolean;
+  missing: { rideId?: string | null; deliveryId?: string | null; driverUserId: string; fleetPartnerId: string; fare: string | number; currency?: string; completedAt: string }[];
+  amountMismatch: { fleetTripId: string; rideId?: string | null; deliveryId?: string | null; recordedFare: string; actualFare: string }[];
+  fieldMismatch: { fleetTripId: string; rideId?: string | null; deliveryId?: string | null; diffs: { field: string; recorded: string; expected: string }[] }[];
+  ambiguous: { rideId?: string | null; deliveryId?: string | null; driverUserId: string; completedAt: string; note: string }[];
+}
+
 export const fleetAdminAPI = {
   stats: () => d<FleetStats>(api.get('/admin/fleet/stats')),
   list: (params: { status?: string; q?: string; page?: number; limit?: number }) => d<{ total: number; fleets: FleetPartner[] }>(api.get('/admin/fleet/partners', { params })),
@@ -23,7 +34,9 @@ export const fleetAdminAPI = {
   reviewDocument: (id: string, approved: boolean, note?: string) => d<{ document: FleetDocument }>(api.put(`/admin/fleet/documents/${id}/review`, { approved, note: note || undefined })),
   settlements: (params: { status?: string; fleetPartnerId?: string; limit?: number }) => d<{ settlements: FleetSettlement[] }>(api.get('/admin/fleet/settlements', { params })).then((r) => r.settlements),
   createSettlement: (body: { fleetPartnerId: string; periodStart: string; periodEnd: string; adjustments?: number }) => d<{ settlement: FleetSettlement; tripCount: number }>(api.post('/admin/fleet/settlements', body)),
-  transitionSettlement: (id: string, status: SettlementStatus) => d<{ settlement: FleetSettlement }>(api.put(`/admin/fleet/settlements/${id}/status`, { status })),
+  reconcileTrips: (params: { since?: string; until?: string }) => d<TripReconciliation>(api.get('/admin/fleet/reconciliation/trips', { params })),
+  repairTrips: (body: { since?: string; until?: string }) => d<TripReconciliation & { repaired: number; failed: { rideId?: string; deliveryId?: string; error: string }[] }>(api.post('/admin/fleet/reconciliation/trips/repair', body)),
+  transitionSettlement: (id: string, status: SettlementStatus, evidence?: PaymentEvidence) => d<{ settlement: FleetSettlement }>(api.put(`/admin/fleet/settlements/${id}/status`, { status, ...(evidence || {}) })),
 };
 
 export type BankPartnerInput = Partial<Pick<BankPartner, 'legalName' | 'displayName' | 'countryCode' | 'logoUrl' | 'websiteUrl' | 'contactEmail' | 'contactPhone' | 'agreementReference' | 'agreementStartAt' | 'agreementEndAt'>>;

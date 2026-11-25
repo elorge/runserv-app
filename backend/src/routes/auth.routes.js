@@ -104,6 +104,7 @@ router.get('/me', authenticate, authController.getCurrentUser);
 router.post('/refresh', authenticate, authController.refreshToken);
 
 router.post('/logout', authenticate, authController.logout);
+router.post('/logout-all', authenticate, authController.logoutAll);   // WP-03
 
 router.post('/resend-verification-email', authLimiter, [body('email').isEmail().normalizeEmail()], authController.resendVerificationByEmail);
 

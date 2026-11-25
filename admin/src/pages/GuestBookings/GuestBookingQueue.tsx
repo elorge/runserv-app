@@ -34,7 +34,7 @@ const GuestBookingQueue: React.FC = () => {
     <div className="space-y-4 p-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div><h1 className="text-2xl font-bold text-gray-900">Guest bookings</h1><p className="text-sm text-gray-500">Rides and parcels booked without an account. Phone numbers are masked.</p></div>
-        <div className="flex gap-3 text-sm"><Link to="/guest-bookings/lookup" className="text-primary-600 underline">Look up a booking</Link><Link to="/guest-bookings/sms" className="text-primary-600 underline">SMS queue</Link><Link to="/guest-bookings/abuse" className="text-primary-600 underline">Abuse signals</Link></div>
+        <div className="flex gap-3 text-sm"><Link to="/guest-bookings/lookup" className="text-primary-600 underline">Look up a booking</Link><Link to="/guest-bookings/attention" className="text-primary-600 underline">Recipient attention</Link><Link to="/guest-bookings/metrics" className="text-primary-600 underline">Pilot metrics</Link><Link to="/guest-bookings/email" className="text-primary-600 underline">Email queue</Link><Link to="/guest-bookings/sms" className="text-primary-600 underline">SMS queue</Link><Link to="/guest-bookings/abuse" className="text-primary-600 underline">Abuse signals</Link></div>
       </div>
 
       <Card>

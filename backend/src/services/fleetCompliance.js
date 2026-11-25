@@ -97,6 +97,8 @@ const vehicleCompliance = (vehicle, { now = new Date(), required = requiredDocs(
 const dispatchEligibility = ({ fleetPartner, vehicle }, opts = {}) => {
   const reasons = [];
   if (fleetPartner.status !== 'ACTIVE') reasons.push(`fleet account is ${String(fleetPartner.status).toLowerCase()}`);
+  // WP-05: ACTIVE alone is not enough. Un-verifying / rejecting a fleet's KYC blocks new work immediately.
+  if (String(fleetPartner.verificationStatus) !== 'VERIFIED') reasons.push(`fleet account is not verified (${String(fleetPartner.verificationStatus || 'unverified').toLowerCase().replace(/_/g, ' ')})`);
   if (vehicle.status !== 'ACTIVE' || vehicle.isActive === false) reasons.push(`vehicle is ${String(vehicle.status).toLowerCase()}`);
   reasons.push(...vehicleCompliance(vehicle, opts).blockers);
   return { ok: reasons.length === 0, reasons };
@@ -114,6 +116,7 @@ const dispatchReasons = ({ fleetPartner, vehicle }, opts = {}) => {
   const reasons = [];
   const fStatus = String(fleetPartner.status);
   if (fStatus !== 'ACTIVE') reasons.push({ code: 'FLEET_NOT_ACTIVE', fleetStatus: fStatus, fixedBy: 'RUNSERV', message: `Your fleet account is ${fStatus.toLowerCase().replace(/_/g, ' ')}. Contact your fleet manager.` });
+  if (String(fleetPartner.verificationStatus) !== 'VERIFIED') reasons.push({ code: 'FLEET_NOT_VERIFIED', fleetVerification: String(fleetPartner.verificationStatus || 'UNVERIFIED'), fixedBy: 'RUNSERV', message: 'Your fleet account is not verified. Contact your fleet manager or Runserv support.' });
   const vStatus = String(vehicle.status);
   if (vStatus !== 'ACTIVE' || vehicle.isActive === false) reasons.push({ code: 'VEHICLE_NOT_ACTIVE', vehicleStatus: vStatus, fixedBy: 'FLEET', message: `Your assigned vehicle is ${vStatus.toLowerCase().replace(/_/g, ' ')}. Contact your fleet manager.` });
   const c = vehicleCompliance(vehicle, opts);

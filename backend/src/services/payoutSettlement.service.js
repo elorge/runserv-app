@@ -15,6 +15,7 @@ const prisma = require('../lib/prisma');
 const notificationService = require('./notification.service');
 const { logActivity } = require('../utils/auditLog');
 const { formatMoney } = require('../utils/currency');
+const { creditOps } = require('./walletOps');
 
 /**
  * @param {{reference:string, outcome:'SUCCESS'|'FAILED', message?:string, transferCode?:string}} r
@@ -48,7 +49,7 @@ const applyTransferResult = async ({ reference, outcome, message, transferCode }
 
   try {
     await prisma.$transaction([
-      prisma.wallet.update({ where: { userId: payout.userId }, data: { balance: { increment: refund } } }),
+      ...creditOps(prisma, { walletId: wallet.id, currency: wallet.currency || payout.currency, amount: refund, refType: 'PAYOUT_REFUND', refId: payout.id, memo: reason, idempotencyKey: `PAYOUT_REFUND:${payout.id}` }),
       prisma.payout.update({ where: { id: payout.id }, data: { status: 'FAILED', failureReason: reason, processedAt: new Date() } }),
       prisma.walletTransaction.updateMany({ where: { reference: payout.reference }, data: { status: 'FAILED' } }),
       // Unique reference = a second webhook delivery fails here and rolls the whole

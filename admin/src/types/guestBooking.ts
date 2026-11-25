@@ -25,7 +25,31 @@ export interface ChannelStatus {
   provider?: string | null; providerMessageId?: string | null; attempts?: number; errorCategory?: string | null; lastError?: string | null;
   deliveryStatus?: string | null; sentAt?: string | null; createdAt?: string | null;
 }
-export interface RecipientComms { email: ChannelStatus; sms: ChannelStatus; overall: 'OK' | 'PENDING' | 'UNRESOLVED'; partial: boolean; resendCooldownS: number }
+// M16.2.1: code lifecycle. A state, never a value: the code, its hash and its nonce are never sent to Admin.
+export type CodeState = 'NOT_REQUIRED' | 'VERIFIED' | 'LOCKED' | 'EXPIRED' | 'ACTIVE';
+export interface CodeLifecycle { state: CodeState; version: number; expiresAt: string | null; rotatedAt: string | null; legacy: boolean; expiryPolicyConfigured: boolean }
+export type RecoveryAction = 'ROTATE' | 'RESEND' | null;
+export interface RecipientComms { email: ChannelStatus; sms: ChannelStatus; overall: 'OK' | 'PENDING' | 'UNRESOLVED'; partial: boolean; resendCooldownS: number; code?: CodeLifecycle; recovery?: RecoveryAction; needsAttention?: boolean }
+
+// M16.2.1: recipient-attention work list (GET /recipient-attention). `source` and `deliveryId` are added by the backend for registered-customer parcels (Option B).
+export interface AttentionItem {
+  id: string; deliveryId?: string; source?: 'GUEST' | 'REGISTERED'; reference: string | null; deliveryStatus: string; createdAt: string;
+  overall: 'OK' | 'PENDING' | 'UNRESOLVED'; recovery: 'ROTATE' | 'RESEND'; code: CodeLifecycle;
+  email: { state: ChannelState; contact?: string | null }; sms: { state: ChannelState };
+}
+
+// M16.2.1: pilot metrics (GET /pilot-metrics). Aggregates only.
+export interface ChannelMetrics {
+  channel: 'email' | 'sms'; total: number; queued: number; accepted: number; deadLettered: number; skipped: number; retried: number;
+  acceptedRatePct: number | null; deliveryReceiptRatePct: number | null; deliveredPct: number | null; deadLetterRatePct: number | null; medianSecondsToAcceptance: number | null;
+  byProvider: Record<string, { total: number; accepted: number; deadLettered: number }>;
+}
+export interface PilotMetrics {
+  since: string; sinceHours: number; email: ChannelMetrics; sms: ChannelMetrics;
+  pod: { parcels: number; verified: number; wrongAttempts: number; expiredAttempts: number; lockouts: number; lockoutRatePct: number | null; resends: number; rotations: number; exceptionsRequested: number; exceptionsApproved: number };
+  escalation: { parcelsNeedingManualAction: number; ratePct: number | null };
+  tracking: { views: number; note: string };
+}
 
 export interface GuestBookingDetail extends GuestBookingRow {
   communications?: RecipientComms | null;

@@ -45,6 +45,13 @@ const ADMINS = [
 const { isProduction } = require('../src/utils/envGuard');
 const KNOWN_PASSWORDS = ['Runserv1@', 'happen123', 'Test1234!'];
 let accounts = ADMINS;
+if (!isProduction()) {
+  // Development accounts have a KNOWN password. Refuse unless explicitly allowed AND the database is local.
+  const host = (() => { try { return new URL(process.env.DATABASE_URL || '').hostname; } catch { return ''; } })();
+  const local = ['localhost', '127.0.0.1', '::1', ''].includes(host);
+  if (process.env.ALLOW_DEV_SEED !== 'yes') { console.error('Refusing to create development admins (known password). Set ALLOW_DEV_SEED=yes to confirm this is a throw-away LOCAL database.'); process.exit(1); }
+  if (!local) { console.error(`Refusing: DATABASE_URL host "${host}" is not local. Development admins (known password) must never be created on a shared database.`); process.exit(1); }
+}
 if (isProduction()) {
   const email = process.env.SEED_ADMIN_EMAIL; const password = process.env.SEED_ADMIN_PASSWORD; const phone = process.env.SEED_ADMIN_PHONE;
   const problems = [];

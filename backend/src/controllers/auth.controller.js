@@ -20,7 +20,9 @@ const { OAuth2Client }     = require('google-auth-library');
 
 // `mfa` marks a token issued AFTER the authenticator step; staff sessions that passed it last 12 hours, not a week.
 const generateToken = (userId, { mfa = false } = {}) =>
-  jwt.sign(mfa ? { userId, mfa: true } : { userId }, process.env.JWT_SECRET, {
+  jwt.sign({ userId, ...(mfa ? { mfa: true } : {}), iatMs: Date.now() }, process.env.JWT_SECRET, {   // iatMs: millisecond issue time, so log-out-everywhere has an exact boundary (JWT iat is whole seconds)
+   
+    jwtid: crypto.randomUUID(),   // WP-03: lets a single token be revoked at logout
     expiresIn: mfa ? (process.env.STAFF_JWT_EXPIRES_IN || '12h') : (process.env.JWT_EXPIRES_IN || '7d'),
   });
 exports.generateToken = generateToken;
@@ -455,8 +457,15 @@ exports.refreshToken = async (req, res) => {
 // Logout
 // ─────────────────────────────────────────────────────────────────────────────
 exports.logout = async (req, res) => {
-  // TODO: add token to Redis blacklist when available
+  // WP-03: the token used for this request stops working immediately (every other session of the user is untouched).
+  await require('../services/tokenRevocation.service').revokeCurrent(req);
   res.status(200).json({ success: true, message: 'Logged out successfully' });
+};
+
+// Log out of every device: all tokens issued before now are refused.
+exports.logoutAll = async (req, res) => {
+  await require('../services/tokenRevocation.service').revokeAllForUser(req.user.id, { reason: 'LOGOUT_ALL', req });
+  res.status(200).json({ success: true, message: 'Signed out of all devices.' });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

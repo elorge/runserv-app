@@ -18,14 +18,14 @@ INSERT INTO "Delivery"("id","status","podCodeHash") VALUES ('legacy-1','IN_TRANS
 SQL
 fi
 for pass in 1 2; do
-  for f in m15_guest_booking.sql m16_sms_outbox.sql m16_1_email_otp.sql m16_2_recipient_handover.sql m16_2_1_pod_code_lifecycle.sql; do
+  for f in m15_guest_booking.sql m16_sms_outbox.sql m16_1_email_otp.sql m16_2_recipient_handover.sql m16_2_1_pod_code_lifecycle.sql m16_2_2_registered_parcel_email.sql; do
     psql_ -f "$SQL_DIR/$f" >/dev/null && echo "pass $pass  OK  $f"
   done
 done
 echo "--- verification"
 psql_ -At <<'SQL'
 SELECT 'columns: ' || string_agg(column_name, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_name='Delivery' AND column_name IN ('podCodeNonce','podCodeVersion','podCodeExpiresAt','podCodeRotatedAt','podNotifyReservedAt','recipientEmail');
-SELECT 'indexes: ' || string_agg(indexname, ',' ORDER BY indexname) FROM pg_indexes WHERE indexname IN ('Delivery_podCodeExpiresAt_idx','EmailOutbox_kind_status_createdAt_idx','EmailOutbox_bookingId_kind_createdAt_idx');
+SELECT 'indexes: ' || string_agg(indexname, ',' ORDER BY indexname) FROM pg_indexes WHERE indexname IN ('Delivery_podCodeExpiresAt_idx','EmailOutbox_kind_status_createdAt_idx','EmailOutbox_bookingId_kind_createdAt_idx','EmailOutbox_deliveryId_kind_createdAt_idx');
 SELECT 'legacy row: nonce=' || coalesce("podCodeNonce",'NULL') || ' version=' || "podCodeVersion" || ' expires=' || coalesce("podCodeExpiresAt"::text,'NULL') || ' hash=' || "podCodeHash" FROM "Delivery" WHERE "id"='legacy-1';
 SQL
 echo "REHEARSAL OK"

@@ -38,7 +38,7 @@ describe('document state', () => {
 
 describe('vehicle dispatch eligibility', () => {
   const now = new Date('2026-11-17T10:00:00Z');
-  const fleetOk = { status: 'ACTIVE' };
+  const fleetOk = { status: 'ACTIVE', verificationStatus: 'VERIFIED' };
   const v = (o = {}) => ({ status: 'ACTIVE', isActive: true, insuranceExpiresAt: '2027-06-01', roadworthyExpiresAt: '2027-06-01', permitExpiresAt: null, ...o });
   test('clean vehicle is eligible', () => { expect(comp.dispatchEligibility({ fleetPartner: fleetOk, vehicle: v() }, { now }).ok).toBe(true); });
   test('expired insurance blocks', () => {

@@ -18,7 +18,7 @@ const { dispatchReasons } = require('../src/services/fleetCompliance');
 const fleetService = require('../src/services/fleet.service');
 
 const NOW = new Date('2026-11-17T12:00:00Z');
-const fleet = (o = {}) => ({ status: 'ACTIVE', tradingName: 'Lagos Rides', legalName: 'Lagos Rides Ltd', ...o });
+const fleet = (o = {}) => ({ status: 'ACTIVE', verificationStatus: 'VERIFIED', tradingName: 'Lagos Rides', legalName: 'Lagos Rides Ltd', ...o });
 // Documents are proven by approved RECORDS for this vehicle (guide §3.2); the legacy *ExpiresAt columns are ignored.
 const D = (type, expiresAt, o = {}) => ({ id: `d-${type}`, vehicleId: 'v1', documentType: type, isApproved: true, verifiedAt: new Date('2026-01-01'), rejectionNote: null, expiresAt, ...o });
 const veh = (o = {}) => {

@@ -13,7 +13,7 @@ mockDb.$executeRaw = jest.fn().mockResolvedValue(1);
 jest.mock('../src/lib/prisma', () => mockDb);
 const svc = require('../src/services/fleet.service');
 
-const FLEET = { id: 'fleet-aaaaaa', status: 'ACTIVE', commissionRate: '0.150000', currency: 'NGN' };
+const FLEET = { id: 'fleet-aaaaaa', status: 'ACTIVE', verificationStatus: 'VERIFIED', commissionRate: '0.150000', currency: 'NGN' };
 // Dispatch is decided from approved document RECORDS (guide §3.2), not from typed expiry columns.
 const doc = (type, o = {}) => ({ id: `doc-${type}`, vehicleId: 'veh1', documentType: type, isApproved: true, verifiedAt: new Date('2026-01-01'), rejectionNote: null, expiresAt: '2099-01-01', ...o });
 const GOOD_VEHICLE = { id: 'veh1', fleetPartnerId: 'fleet-aaaaaa', vehicleType: 'CAR', status: 'ACTIVE', isActive: true, documents: [doc('insurance'), doc('roadworthy')] };
@@ -58,9 +58,33 @@ describe('assignDriver', () => {
 });
 
 describe('endAssignment', () => {
-  test('blocked while a trip is in progress', async () => {
-    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue({ id: 'a1', status: 'ACTIVE', driverUserId: 'd', vehicleId: 'v' }); mockDb.fleetTrip.findFirst.mockResolvedValue({ id: 't' });
-    await expect(svc.endAssignment({ fleetPartnerId: 'f', assignmentId: 'a1', actor: 'u' })).rejects.toMatchObject({ statusCode: 409 });
+  const A = { id: 'a1', status: 'ACTIVE', driverUserId: 'd', vehicleId: 'v' };
+  beforeEach(() => {
+    mockDb.ride = { findFirst: jest.fn().mockResolvedValue(null) }; mockDb.delivery = { findFirst: jest.fn().mockResolvedValue(null) };
+    mockDb.fleetTrip.findFirst.mockReset().mockResolvedValue(null);
+    mockDb.fleetDriverAssignment.findFirst.mockResolvedValue(A);
+    mockDb.fleetDriverAssignment.updateMany = jest.fn().mockResolvedValue({ count: 1 }); mockDb.fleetDriverAssignment.findUnique = jest.fn().mockResolvedValue({ ...A, status: 'ENDED' });
+  });
+  const end = () => svc.endAssignment({ fleetPartnerId: 'f', assignmentId: 'a1', actor: 'u' });
+  test('blocked while a FleetTrip is in progress', async () => {
+    mockDb.fleetTrip.findFirst.mockResolvedValue({ id: 't' }); await expect(end()).rejects.toMatchObject({ statusCode: 409 });
+    expect(mockDb.fleetDriverAssignment.updateMany).not.toHaveBeenCalled();
+  });
+  test('blocked while the driver has an ACTIVE RIDE even though no FleetTrip exists yet', async () => {
+    mockDb.ride.findFirst.mockResolvedValue({ id: 'r1' }); await expect(end()).rejects.toMatchObject({ statusCode: 409 });
+    expect(mockDb.ride.findFirst.mock.calls[0][0].where).toMatchObject({ driverId: 'd', status: { in: ['ACCEPTED', 'ARRIVED', 'IN_PROGRESS'] } });
+    expect(mockDb.fleetDriverAssignment.updateMany).not.toHaveBeenCalled();
+  });
+  test('blocked while the driver has an ACTIVE DELIVERY', async () => {
+    mockDb.delivery.findFirst.mockResolvedValue({ id: 'dl1' }); await expect(end()).rejects.toMatchObject({ statusCode: 409 });
+    expect(mockDb.delivery.findFirst.mock.calls[0][0].where).toMatchObject({ partnerId: 'd', status: { in: ['ASSIGNED', 'PICKED_UP', 'IN_TRANSIT'] } });
+  });
+  test('ends the assignment inside one transaction under a per-driver lock when the driver is idle', async () => {
+    await expect(end()).resolves.toMatchObject({ status: 'ENDED' });
+    expect(mockDb.$executeRaw).toHaveBeenCalled(); expect(mockDb.fleetDriverAssignment.updateMany.mock.calls[0][0].where).toEqual({ id: 'a1', status: 'ACTIVE' });
+  });
+  test('a concurrent close (count 0) is reported, not double-applied', async () => {
+    mockDb.fleetDriverAssignment.updateMany.mockResolvedValue({ count: 0 }); await expect(end()).rejects.toMatchObject({ statusCode: 400 });
   });
   test('other fleet’s assignment is a 404', async () => {
     mockDb.fleetDriverAssignment.findFirst.mockResolvedValue(null);
@@ -109,6 +133,8 @@ describe('recordFleetTrip', () => {
   });
 });
 
+const EV = { paymentReference: 'NIBSS-20261124-0001', paymentMethod: 'BANK_TRANSFER', paidAmount: '100.00' };
+const PAYABLE = { ...FLEET, payoutBankCode: '058', payoutAccountNumber: '0123456789' };
 describe('settlements', () => {
   const trips = [{ fareAmount: '10000.00', platformFeeAmount: '1500.00' }, { fareAmount: '2500.50', platformFeeAmount: '375.08' }];
   test('summariseTrips reconciles to trip-level records', () => {
@@ -140,19 +166,48 @@ describe('settlements', () => {
     await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'u' })).rejects.toMatchObject({ statusCode: 400 });
   });
   test('maker–checker: approver cannot also mark paid', async () => {
-    mockDb.fleetSettlement.findUnique.mockResolvedValue({ id: 's', status: 'APPROVED', fleetPartnerId: 'f' }); mockDb.activityLog.findFirst.mockResolvedValue({ userId: 'admin1' });
+    mockDb.fleetSettlement.findUnique.mockResolvedValue({ id: 's', status: 'APPROVED', fleetPartnerId: 'f', netAmount: '100.00' }); mockDb.activityLog.findFirst.mockResolvedValue({ userId: 'admin1' });
     await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'admin1' })).rejects.toMatchObject({ statusCode: 403 });
     mockDb.fleetSettlement.updateMany.mockResolvedValue({ count: 1 });
-    mockDb.fleetSettlement.findUnique.mockReset(); mockDb.fleetSettlement.findUnique.mockResolvedValueOnce({ id: 's', status: 'APPROVED', fleetPartnerId: 'f' }).mockResolvedValueOnce({ id: 's', status: 'PAID' });
-    await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'admin2' })).resolves.toMatchObject({ status: 'PAID' });
+    mockDb.fleetSettlement.findUnique.mockReset(); mockDb.fleetSettlement.findUnique.mockResolvedValueOnce({ id: 's', status: 'APPROVED', fleetPartnerId: 'f', netAmount: '100.00' }).mockResolvedValueOnce({ id: 's', status: 'PAID' }); mockDb.fleetPartner.findUnique.mockResolvedValue(PAYABLE);
+    await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'admin2', evidence: EV })).resolves.toMatchObject({ status: 'PAID' });
     expect(mockDb.fleetSettlement.updateMany.mock.calls[0][0].data.paidAt).toBeInstanceOf(Date);
     // conditional update: carries the status we validated against
     expect(mockDb.fleetSettlement.updateMany.mock.calls[0][0].where).toEqual({ id: 's', status: 'APPROVED' });
   });
   test('maker–checker can be switched off for single-admin deployments', async () => {
     process.env.FLEET_MAKER_CHECKER = 'off';
-    mockDb.fleetSettlement.findUnique.mockReset(); mockDb.fleetSettlement.findUnique.mockResolvedValue({ id: 's', status: 'APPROVED', fleetPartnerId: 'f' }); mockDb.fleetSettlement.updateMany.mockResolvedValue({ count: 1 });
-    await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'admin1' })).resolves.toBeTruthy();
+    mockDb.fleetSettlement.findUnique.mockReset(); mockDb.fleetSettlement.findUnique.mockResolvedValue({ id: 's', status: 'APPROVED', fleetPartnerId: 'f', netAmount: '100.00' }); mockDb.fleetSettlement.updateMany.mockResolvedValue({ count: 1 }); mockDb.fleetPartner.findUnique.mockResolvedValue(PAYABLE);
+    await expect(svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'admin1', evidence: EV })).resolves.toBeTruthy();
     delete process.env.FLEET_MAKER_CHECKER;
+  });
+  describe('PAID needs payment evidence', () => {
+    const approved = () => { mockDb.fleetSettlement.findUnique.mockReset(); mockDb.fleetSettlement.findUnique.mockResolvedValue({ id: 's', status: 'APPROVED', fleetPartnerId: 'f', netAmount: '100.00' }); mockDb.activityLog.findFirst.mockResolvedValue({ userId: 'maker' }); mockDb.fleetSettlement.updateMany.mockReset(); mockDb.fleetSettlement.updateMany.mockResolvedValue({ count: 1 }); mockDb.fleetPartner.findUnique.mockResolvedValue(PAYABLE); };
+    const pay = (evidence) => svc.transitionSettlement({ id: 's', to: 'PAID', actor: 'checker', evidence });
+    test('no evidence, short reference, bad method, missing or wrong amount are all refused and nothing is written', async () => {
+      approved();
+      await expect(pay(null)).rejects.toMatchObject({ statusCode: 400 });
+      await expect(pay({ ...EV, paymentReference: 'abc' })).rejects.toMatchObject({ statusCode: 400 });
+      await expect(pay({ ...EV, paymentMethod: 'CASH' })).rejects.toMatchObject({ statusCode: 400 });
+      await expect(pay({ ...EV, paidAmount: undefined })).rejects.toMatchObject({ statusCode: 400 });
+      await expect(pay({ ...EV, paidAmount: '99.99' })).rejects.toMatchObject({ code: 'PAID_AMOUNT_MISMATCH' });
+      expect(mockDb.fleetSettlement.updateMany).not.toHaveBeenCalled();
+    });
+    test('an unverified fleet or one without a payout account cannot be paid', async () => {
+      approved(); mockDb.fleetPartner.findUnique.mockResolvedValue({ ...PAYABLE, verificationStatus: 'PENDING' });
+      await expect(pay(EV)).rejects.toMatchObject({ code: 'FLEET_NOT_VERIFIED' });
+      mockDb.fleetPartner.findUnique.mockResolvedValue({ ...PAYABLE, payoutAccountNumber: null });
+      await expect(pay(EV)).rejects.toMatchObject({ code: 'PAYOUT_ACCOUNT_MISSING' });
+    });
+    test('valid evidence is stored with the masked account snapshot, the payer and the amount', async () => {
+      approved(); await pay({ ...EV, paidAmount: 100 });
+      const d = mockDb.fleetSettlement.updateMany.mock.calls[0][0].data;
+      expect(d).toMatchObject({ status: 'PAID', paymentReference: EV.paymentReference, paymentMethod: 'BANK_TRANSFER', paidAmount: 100, paidById: 'checker', payoutAccountMasked: '058 ••••6789' });
+      expect(d.paidAt).toBeInstanceOf(Date);
+    });
+    test('the same bank reference cannot settle two statements (unique violation -> 409)', async () => {
+      approved(); mockDb.fleetSettlement.updateMany.mockRejectedValue(Object.assign(new Error('u'), { code: 'P2002' }));
+      await expect(pay(EV)).rejects.toMatchObject({ statusCode: 409, code: 'DUPLICATE_PAYMENT_REFERENCE' });
+    });
   });
 });

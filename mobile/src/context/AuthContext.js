@@ -1,4 +1,5 @@
 // mobile/src/context/AuthContext.js
+import { registerDeviceToken, unregisterDeviceToken, requestUserPermission } from '../utils/notifications';
 import React, { createContext, useState, useEffect, useRef, useContext } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Alert } from 'react-native';
@@ -244,15 +245,20 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
+    // WP-03/08: while the token is still valid, stop pushes to this device and revoke the session server-side.
+    try { await unregisterDeviceToken(); } catch {}
+    try { await authAPI.logout(); } catch {}
     setToken(null);
     setUser(null);
     setBiometricLocked(false);
     try { socketService.disconnect(); } catch {}
     try { await AsyncStorage.multiRemove(['authToken', 'user']); } catch {}
-    try { await authAPI.logout(); } catch {}
   };
 
   logoutRef.current = logout;
+
+  // Register this device for push once signed in (and again after every app start).
+  useEffect(() => { if (token && user) { requestUserPermission().then(() => registerDeviceToken()).catch(() => {}); } }, [token, user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─────────────────────────────────────────────────────────────────────────
   // M16 guest session. Separate from the registered session on purpose.

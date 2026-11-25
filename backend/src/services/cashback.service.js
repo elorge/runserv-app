@@ -1,6 +1,7 @@
 // backend/src/services/cashback.service.js
 'use strict';
 
+const { creditOps } = require('./walletOps');
 const prisma = require('../lib/prisma');
 const notificationService = require('./notification.service');
 const countrySettingsService = require('./countrySettings.service');
@@ -101,7 +102,7 @@ async function checkAndIssueRideCashback(userId) {
 
   try {
     await prisma.$transaction([
-      prisma.wallet.update({ where: { userId }, data: { balance: { increment: cashbackAmount } } }),
+      ...creditOps(prisma, { walletId: wallet.id, currency: wallet.currency, amount: cashbackAmount, refType: 'CASHBACK', refId: reference, memo: 'Milestone cashback', idempotencyKey: `CASHBACK:${reference}` }),
       prisma.walletTransaction.create({
         data: {
           walletId: wallet.id,

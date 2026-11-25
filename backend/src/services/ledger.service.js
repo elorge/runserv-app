@@ -14,8 +14,14 @@ const { toMinor, fromMinor } = require('../utils/money');
  * @param tx   a Prisma transaction client (post inside the same transaction as the balance change)
  * @param {{refType:string, refId:string, memo?:string, actor?:string, currency:string, legs:{account:string, direction:'DEBIT'|'CREDIT', amount:number}[]}} e
  */
+/** FAIL CLOSED: a client without the ledger table must never let a balance change through unrecorded. Only the test runner may skip. */
+const ledgerMissing = () => {
+  if (process.env.NODE_ENV === 'test') return true;
+  throw new AppError('Ledger unavailable: refusing a balance change that cannot be journalled.', 500);
+};
+
 const post = async (tx, e) => {
-  if (!tx?.ledgerEntry) return null;                               // callers inside older fakes / scripts simply skip
+  if (!tx?.ledgerEntry) { ledgerMissing(); return null; }          // reached only under NODE_ENV=test (older fakes); anywhere else it throws
   if (!e.legs?.length || e.legs.length < 2) throw new AppError('A ledger event needs at least two legs.', 500);
   let d = 0; let c = 0;
   for (const l of e.legs) {
@@ -25,14 +31,14 @@ const post = async (tx, e) => {
   }
   if (d !== c) throw new AppError('Ledger event does not balance.', 500);
   const group = crypto.randomUUID();
-  const rows = e.legs.map((l, i) => ({ entryGroup: group, account: l.account, currency: e.currency, direction: l.direction, amount: fromMinor(toMinor(l.amount)), refType: e.refType, refId: String(e.refId), memo: e.memo ? String(e.memo).slice(0, 300) : null, actorId: e.actor || null, idempotencyKey: `${group}:${i}` }));
+  const rows = e.legs.map((l, i) => ({ entryGroup: group, account: l.account, currency: e.currency, direction: l.direction, amount: fromMinor(toMinor(l.amount)), refType: e.refType, refId: String(e.refId), memo: e.memo ? String(e.memo).slice(0, 300) : null, actorId: e.actor || null, idempotencyKey: e.idempotencyKey ? `${e.idempotencyKey}:${i}` : `${group}:${i}` }));
   await tx.ledgerEntry.createMany({ data: rows });
   return group;
 };
 
 /** A single money movement between a named account and the clearing account (the "other side" outside the wallet). */
-const move = (tx, { account, direction, amount, currency, refType, refId, memo, actor, counter = 'PLATFORM:CLEARING' }) =>
-  post(tx, { refType, refId, memo, actor, currency, legs: [{ account, direction, amount }, { account: counter, direction: direction === 'DEBIT' ? 'CREDIT' : 'DEBIT', amount }] });
+const move = (tx, { account, direction, amount, currency, refType, refId, memo, actor, idempotencyKey, counter = 'PLATFORM:CLEARING' }) =>
+  post(tx, { refType, refId, memo, actor, currency, idempotencyKey, legs: [{ account, direction, amount }, { account: counter, direction: direction === 'DEBIT' ? 'CREDIT' : 'DEBIT', amount }] });
 
 /** Net position of an account from the ledger alone (credits − debits), for reconciliation against the balance column. */
 const balanceOf = async (prisma, account, currency) => {
@@ -41,4 +47,19 @@ const balanceOf = async (prisma, account, currency) => {
   return fromMinor(sum('CREDIT') - sum('DEBIT'));
 };
 
-module.exports = { post, move, balanceOf };
+/**
+ * Array-form variant for `prisma.$transaction([...])`: returns ONE PrismaPromise (createMany) that writes the same balanced
+ * legs as move(). Put it in the same array as the balance change so both commit or neither does. With a client that has no
+ * ledger table (old test fakes) it resolves to null.
+ */
+const moveOp = (db, { account, direction, amount, currency, refType, refId, memo, actor, idempotencyKey, counter = 'PLATFORM:CLEARING' }) => {
+  if (!db?.ledgerEntry) { ledgerMissing(); return Promise.resolve(null); }
+  const legs = [{ account, direction, amount }, { account: counter, direction: direction === 'DEBIT' ? 'CREDIT' : 'DEBIT', amount }];
+  let d = 0; let c = 0;
+  for (const l of legs) { const m = toMinor(l.amount); if (!(m > 0)) throw new AppError('Ledger amounts must be positive.', 500); if (l.direction === 'DEBIT') d += m; else c += m; }
+  if (d !== c) throw new AppError('Ledger event does not balance.', 500);
+  const group = crypto.randomUUID();
+  return db.ledgerEntry.createMany({ data: legs.map((l, i) => ({ entryGroup: group, account: l.account, currency, direction: l.direction, amount: fromMinor(toMinor(l.amount)), refType, refId: String(refId), memo: memo ? String(memo).slice(0, 300) : null, actorId: actor || null, idempotencyKey: idempotencyKey ? `${idempotencyKey}:${i}` : `${group}:${i}` })) });
+};
+
+module.exports = { post, move, moveOp, balanceOf };

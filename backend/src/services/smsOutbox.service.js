@@ -23,9 +23,10 @@ const enabled = (env = process.env) => String(env.SMS_DELIVERY_NOTIFICATIONS_ENA
 const mask = (p) => { const d = String(p || '').replace(/[^\d+]/g, ''); return d.length > 6 ? `${d.slice(0, 4)}****${d.slice(-3)}` : '****'; };
 
 /** Call INSIDE the booking transaction. Plain create: the (kind, bookingId) pair is new by construction. */
-async function enqueueTx(tx, { kind, bookingId, phone, countryCode = null, env = process.env }) {
+async function enqueueTx(tx, { kind, bookingId = null, deliveryId = null, phone, countryCode = null, idempotencyKey = null, env = process.env }) {
   if (!enabled(env)) return null;
   if (!KINDS[kind]) throw new Error(`unknown SMS kind ${kind}`);
+  if (!bookingId && !deliveryId) throw new Error('SMS needs a bookingId or a deliveryId');
   let to = String(phone || '').replace(/[^\d+]/g, '');
   let invalid = null;
   try {
@@ -36,11 +37,32 @@ async function enqueueTx(tx, { kind, bookingId, phone, countryCode = null, env =
     else to = identity.toE164(to, cc);
   } catch (e) { invalid = `Number could not be normalised: ${e.message}`.slice(0, 200); }
   // A number we can never deliver to is recorded as DEAD at once, so support SEES it instead of it vanishing.
-  return tx.smsOutbox.create({ data: { kind, bookingId, toPhone: invalid ? null : to, toMasked: mask(phone), countryCode, ...(invalid ? { status: 'DEAD', lastError: invalid } : {}) } });
+  return tx.smsOutbox.create({ data: { kind, ...(bookingId ? { bookingId } : { deliveryId }), idempotencyKey: idempotencyKey || null, toPhone: invalid ? null : to, toMasked: mask(phone), countryCode, ...(invalid ? { status: 'DEAD', lastError: invalid } : {}) } });
+}
+
+/**
+ * WP-07: durable SMS for a REGISTERED customer's parcel (no guest booking). Replaces the old fire-and-forget direct send, so the status is persisted
+ * (QUEUED/SENT/DELIVERED/FAILED, attempts, provider message id) and retried by the worker. Idempotent per (kind, delivery, code version): a repeat call
+ * returns the existing row. Returns null when delivery SMS is switched off (the caller reports DISABLED, nothing is sent).
+ */
+async function enqueueForDelivery({ deliveryId, phone, countryCode = null, codeVersion = 1, env = process.env }) {
+  if (!enabled(env)) return null;
+  const idempotencyKey = `RECIPIENT_CODE:${deliveryId}:${codeVersion}`;
+  const existing = await prisma.smsOutbox.findFirst({ where: { kind: KINDS.RECIPIENT_CODE, deliveryId } });
+  if (existing) return existing;
+  try { return await enqueueTx(prisma, { kind: KINDS.RECIPIENT_CODE, deliveryId, phone, countryCode, idempotencyKey, env }); }
+  catch (e) { if (e?.code === 'P2002') return prisma.smsOutbox.findFirst({ where: { kind: KINDS.RECIPIENT_CODE, deliveryId } }); throw e; }
 }
 
 /** Build the message from the booking at send time. Returns null when sending would be wrong (cancelled, link revoked/expired). */
 async function render(row, env = process.env, now = Date.now()) {
+  if (!row.bookingId && row.deliveryId) {          // WP-07: registered parcel
+    const d = await prisma.delivery.findUnique({ where: { id: row.deliveryId } });
+    if (!d || d.status === 'CANCELLED' || d.podVerifiedAt || d.failedAt) return null;
+    const pc = require('./podCode.service');
+    if (pc.isExpired(d, now)) return null;
+    return `A Runserv parcel is coming to you. Give the courier the code ${pc.codeFor(d, env)} ONLY when you have the parcel in your hands. Never share it before.`;
+  }
   const gb = require('./guestBooking.service');
   const b = await prisma.guestBooking.findUnique({ where: { id: row.bookingId } });
   if (!b) return null;
@@ -74,12 +96,16 @@ async function processEvent(id, { now = new Date(), env = process.env, sms = nul
     const text = await render(row, env, now.getTime());
     if (text == null) { await prisma.smsOutbox.update({ where: { id }, data: { status: 'SKIPPED', toPhone: null, lastError: 'No longer needed (cancelled, completed or link turned off)' } }); return { skipped: true }; }
     if (!row.toPhone) throw new Error('No destination number');
-    await (sms || require('./termii.service')).send(row.toPhone, text);
-    await prisma.smsOutbox.update({ where: { id }, data: { status: 'SENT', sentAt: new Date(), toPhone: null, lastError: null } });
+    const gateway = sms || require('./termii.service');
+    const res = await gateway.send(row.toPhone, text);
+    const providerMessageId = res && (res.message_id ?? res.messageId ?? res.id) != null ? String(res.message_id ?? res.messageId ?? res.id).slice(0, 120) : null;
+    await prisma.smsOutbox.update({ where: { id }, data: { status: 'SENT', sentAt: new Date(), toPhone: null, lastError: null, provider: gateway.providerName || (sms ? 'custom' : 'termii'), providerMessageId, deliveryStatus: 'ACCEPTED' } });
     return { done: true };
   } catch (e) {
     const msg = String(e.message || e).slice(0, 300);
-    if (row.attempts >= MAX_ATTEMPTS) { await prisma.smsOutbox.update({ where: { id }, data: { status: 'DEAD', lastError: msg } }); console.error('[sms-outbox] dead-lettered', row.kind, row.bookingId, msg); return { dead: true }; }
+    if (row.attempts >= MAX_ATTEMPTS) { await prisma.smsOutbox.update({ where: { id }, data: { status: 'DEAD', lastError: msg, deliveryStatus: 'FAILED' } }); console.error('[sms-outbox] dead-lettered', row.kind, row.bookingId || row.deliveryId, msg);
+      if (row.kind === 'RECIPIENT_CODE') require('./opsAlert.service').recipientHandoverFailed({ bookingId: row.bookingId || null, deliveryId: row.deliveryId || null, why: 'SMS_DEAD', category: 'SMS_FAILED' }).catch(() => {});   // M16.2.2: tell operations, best-effort
+      return { dead: true }; }
     await prisma.smsOutbox.update({ where: { id }, data: { status: 'PENDING', lastError: msg, nextAttemptAt: new Date(now.getTime() + backoffMs(row.attempts)) } });
     return { retry: true };
   }
@@ -91,6 +117,24 @@ async function processForBooking(bookingId, opts = {}) {
   const out = [];
   for (const r of rows) out.push(await processEvent(r.id, opts));
   return out;
+}
+
+async function processForDelivery(deliveryId, opts = {}) {
+  const rows = await prisma.smsOutbox.findMany({ where: { deliveryId, status: 'PENDING' } });
+  const out = [];
+  for (const r of rows) out.push(await processEvent(r.id, opts));
+  return out;
+}
+
+/**
+ * Provider delivery receipt (webhook / poller): DELIVERED or FAILED for a message the provider accepted. Matches by provider message id, is idempotent,
+ * and never moves a DELIVERED message backwards. Returns { applied }.
+ */
+async function applyReceipt({ providerMessageId, status, at = new Date() }) {
+  const st = String(status || '').toUpperCase();
+  if (!providerMessageId || !['DELIVERED', 'FAILED'].includes(st)) return { applied: false };
+  const r = await prisma.smsOutbox.updateMany({ where: { providerMessageId: String(providerMessageId), status: 'SENT', OR: [{ deliveryStatus: null }, { deliveryStatus: { not: 'DELIVERED' } }] }, data: { deliveryStatus: st, deliveryAt: at } });
+  return { applied: r.count > 0 };
 }
 
 const DUE = (now) => ({ OR: [{ status: 'PENDING', nextAttemptAt: { lte: now } }, { status: 'PROCESSING', updatedAt: { lt: new Date(now.getTime() - STALE_PROCESSING_MS) } }] });
@@ -126,7 +170,7 @@ async function requeue(id, { now = new Date() } = {}) {
  * Admin resend of the recipient SMS: the SAME code, never a new one. The number comes from the delivery (it was cleared from the outbox row
  * after the first send). Resets the single (kind, booking) row to PENDING; a repeat is limited by the caller's cooldown.
  */
-async function resetForResend(bookingId, { phone, countryCode, env = process.env } = {}) {
+async function resetForResend(bookingId, { phone, countryCode, deliveryId = null, env = process.env } = {}) {
   if (!enabled(env)) return { resent: false, reason: 'DISABLED' };
   const { checkPhoneForCountry } = require('../utils/phone');
   const identity = require('./guestIdentity.service');
@@ -134,10 +178,10 @@ async function resetForResend(bookingId, { phone, countryCode, env = process.env
   const raw = String(phone || '').replace(/[^\d+]/g, '');
   if (!checkPhoneForCountry(raw, cc).ok) return { resent: false, reason: 'INVALID_NUMBER' };
   const to = identity.toE164(raw, cc);
-  const row = await prisma.smsOutbox.findFirst({ where: { bookingId, kind: KINDS.RECIPIENT_CODE } });
+  const row = await prisma.smsOutbox.findFirst({ where: bookingId ? { bookingId, kind: KINDS.RECIPIENT_CODE } : { deliveryId, kind: KINDS.RECIPIENT_CODE } });
   if (!row) return { resent: false, reason: 'NOT_QUEUED' };
   if (['PENDING', 'PROCESSING'].includes(row.status)) return { resent: false, reason: 'ALREADY_QUEUED' };
-  const r = await prisma.smsOutbox.updateMany({ where: { id: row.id, status: { in: ['SENT', 'DEAD', 'SKIPPED'] } }, data: { status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), lastError: null, toPhone: to } });
+  const r = await prisma.smsOutbox.updateMany({ where: { id: row.id, status: { in: ['SENT', 'DEAD', 'SKIPPED'] } }, data: { status: 'PENDING', attempts: 0, nextAttemptAt: new Date(), lastError: null, toPhone: to, providerMessageId: null, deliveryStatus: null, deliveryAt: null } });
   return { resent: r.count === 1 };
 }
 
@@ -173,4 +217,4 @@ const startWorker = ({ intervalMs = 15000 } = {}) => {
 };
 const stopWorker = () => { if (timer) { clearInterval(timer); timer = null; } };
 
-module.exports = { resetForResend, KINDS, MAX_ATTEMPTS, SCRUB_DEAD_DAYS, backoffMs, enabled, mask, enqueueTx, render, processEvent, processForBooking, processDue, scrubDead, requeue, noticesFor, stats, startWorker, stopWorker };
+module.exports = { enqueueForDelivery, processForDelivery, applyReceipt, resetForResend, KINDS, MAX_ATTEMPTS, SCRUB_DEAD_DAYS, backoffMs, enabled, mask, enqueueTx, render, processEvent, processForBooking, processDue, scrubDead, requeue, noticesFor, stats, startWorker, stopWorker };

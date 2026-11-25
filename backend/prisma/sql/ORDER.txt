@@ -1,0 +1,18 @@
+# WP-02: the ONE authoritative apply order for hand-written SQL, AFTER the Prisma baseline/migrations have created the tables.
+# Every file is idempotent (safe to run twice). Add new files at the END; never reorder.
+post_migrate.sql
+fleet_bank_partial_indexes.sql
+fleet_settlement_overlap.sql
+m10_location_consent.sql
+m13_licence_outbox.sql
+m15_guest_booking.sql
+m16_sms_outbox.sql
+m16_1_email_otp.sql
+m16_2_recipient_handover.sql
+m16_2_1_pod_code_lifecycle.sql
+m16_2_2_registered_parcel_email.sql
+m17_push_alerts.sql
+m18_fleet_guest_completion.sql
+r1_ledger_security.sql
+m19_fleet_settlement_evidence.sql
+m20_fleet_invitations_shifts.sql

@@ -35,7 +35,7 @@ const makeFakePrisma = ({ countries = [], systemSettings = [], countrySettings =
       },
     },
     // Real Prisma builds lazy operations; the fake runs the thunks in order.
-    $transaction: async (ops) => { for (const op of ops) await op(); },
+    $transaction: async (ops) => { for (const op of ops) await (typeof op === "function" ? op() : op); },
   };
   return fake;
 };

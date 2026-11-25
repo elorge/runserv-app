@@ -6,6 +6,8 @@ import ProofPhotoViewer from '@/components/guestBookings/ProofPhotoViewer';
 import { guestBookingsAPI } from '@/services/api/guestBookings';
 import { useAuth } from '@/hooks/useAuth';
 import type { GuestBookingDetail as Detail, ChannelStatus } from '@/types/guestBooking';
+import RecoveryActions from '@/components/guestBookings/RecoveryActions';
+import CodeLifecycleView from '@/components/guestBookings/CodeLifecycleView';
 import { StatusBadge, fmtDate, money, apiMessage } from './shared';
 
 const Row: React.FC<{ k: string; v: React.ReactNode }> = ({ k, v }) => <div className="flex justify-between gap-4 border-b py-1.5 text-sm"><span className="text-gray-500">{k}</span><span className="text-right font-medium">{v}</span></div>;
@@ -42,15 +44,6 @@ const GuestBookingDetail: React.FC = () => {
     try { setB(await guestBookingsAPI.get(id)); } catch (e) { setB(null); setError(apiMessage(e, 'Booking not found.')); } finally { setLoading(false); }
   }, [id]);
   useEffect(() => { load(); }, [load]);
-
-  const resend = async () => {
-    if (!b || busy) return;
-    if (reason.trim().length < 5) { toast.error('Enter a reason (at least 5 characters).'); return; }
-    if (!window.confirm('Resend the hand-over code and tracking link to the recipient? They receive the SAME code.')) return;
-    setBusy(true);
-    try { const r = await guestBookingsAPI.resendRecipient(b.id, reason.trim()); toast.success(r.message || 'Re-queued.'); setReason(''); load(); }
-    catch (e) { toast.error(apiMessage(e, 'The resend was refused.')); } finally { setBusy(false); }
-  };
 
   const toggleBlock = async () => {
     if (!b || busy) return;
@@ -92,12 +85,9 @@ const GuestBookingDetail: React.FC = () => {
           <div className="grid gap-3 sm:grid-cols-2"><Channel name="Email" c={b.communications.email} /><Channel name="SMS" c={b.communications.sms} /></div>
           {b.communications.overall === 'UNRESOLVED' ? <Alert variant="error">No channel has reached the recipient. Resend, then use the approved manual contact process. Never let the courier bypass the code.</Alert> : null}
           {b.communications.partial ? <p className="mt-2 text-sm text-amber-700">One channel failed; the other was accepted. Operations should still follow up on the failed channel.</p> : null}
+          {b.communications.code ? <CodeLifecycleView code={b.communications.code} recovery={b.communications.recovery ?? null} /> : null}
           {isAdmin && b.proof && !b.proof.verified && !b.proof.failed && b.status !== 'CANCELLED' ? (
-            <div className="mt-3 space-y-2">
-              <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} aria-label="Resend reason" placeholder="Reason for resending (5–200 characters, audited)" className="w-full rounded-md border border-gray-300 p-2 text-sm" />
-              <Button variant="outline" disabled={busy || (!b.communications.email.enabled && !b.communications.sms.enabled)} onClick={resend}>Resend code and tracking link</Button>
-              <p className="text-xs text-gray-500">Same code, no rotation. At most one resend every {b.communications.resendCooldownS}s.</p>
-            </div>
+            <div className="mt-3"><RecoveryActions target={{ source: 'GUEST', bookingId: b.id }} recovery={b.communications.recovery ?? null} disabled={!b.communications.email.enabled && !b.communications.sms.enabled} cooldownS={b.communications.resendCooldownS} onDone={load} /></div>
           ) : null}
         </Card>
       ) : null}

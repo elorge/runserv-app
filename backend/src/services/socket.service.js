@@ -21,7 +21,7 @@ const verifySocketAuth = async (socket, next) => {
 
     const user = await prisma.user.findUnique({
       where:  { id: decoded.userId },
-      select: { id: true, role: true, firstName: true, lastName: true, isActive: true, isSuspended: true, passwordChangedAt: true },
+      select: { id: true, role: true, firstName: true, lastName: true, isActive: true, isSuspended: true, passwordChangedAt: true, sessionsRevokedAt: true },
     });
 
     if (!user)          return next(new Error('User not found'));
@@ -30,6 +30,8 @@ const verifySocketAuth = async (socket, next) => {
     if (user.isSuspended) return next(new Error('Account is suspended'));
     if (user.passwordChangedAt && decoded.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)) return next(new Error('Password was changed'));
 
+    if (require('./tokenRevocation.service').issuedBeforeRevocation(decoded, user.sessionsRevokedAt)) return next(new Error('Session ended'));
+    if (await require('./tokenRevocation.service').isRevoked(token, decoded)) return next(new Error('Session ended'));
     socket.userId   = user.id;
     socket.userRole = user.role;
     socket.userName = `${user.firstName} ${user.lastName}`;

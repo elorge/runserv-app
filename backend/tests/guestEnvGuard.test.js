@@ -2,7 +2,7 @@
 jest.mock('../src/lib/prisma', () => ({}));
 const { productionProblems, guestProblems } = require('../src/utils/envGuard');
 
-const base = { NODE_ENV: 'production', JWT_SECRET: 'j'.repeat(40), DATABASE_URL: 'postgres://x', CLIENT_URL: 'https://a.com', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's', OSRM_URL: 'https://osrm.example.com' };
+const base = { NODE_ENV: 'production', REQUIRE_STAFF_MFA: 'true', MFA_ENCRYPTION_KEY: 'm'.repeat(32), JWT_SECRET: 'j'.repeat(40), DATABASE_URL: 'postgres://x', CLIENT_URL: 'https://a.com', CLOUDINARY_CLOUD_NAME: 'c', CLOUDINARY_API_KEY: 'k', CLOUDINARY_API_SECRET: 's', OSRM_URL: 'https://osrm.example.com' };
 const good = { ...base, GUEST_PLANNING_ENABLED: 'true', GUEST_BOOKING_ENABLED: 'true', GUEST_QUOTE_SECRET: 'q'.repeat(40), GUEST_HASH_SECRET: 'h'.repeat(40), GUEST_TRACKING_BASE_URL: 'https://api.example.com/t', GUEST_OTP_CHANNEL: 'email', GUEST_EMAIL_OTP_ENABLED: 'true', GUEST_OTP_HASH_SECRET: 'o'.repeat(40), BREVO_ENABLED: 'true', BREVO_API_KEY: 'k', BREVO_SENDER_EMAIL: 'no-reply@example.com', RESEND_ENABLED: 'true', RESEND_API_KEY: 'k', RESEND_SENDER_EMAIL: 'no-reply@example.com' };
 
 describe('guest production env validation', () => {

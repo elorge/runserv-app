@@ -106,11 +106,13 @@ exports.lookup = async (req, res) => {
 
 /** Abuse indicators over the last 24 h: events by type and the noisiest sources (hashed IPs). */
 exports.abuse = async (req, res) => {
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const hours = Math.min(24 * 30, Math.max(1, parseInt(req.query.hours, 10) || 24));
+  const recentLimit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
   const types = ['RATE_LIMITED', 'OTP_COOLDOWN', 'OTP_PHONE_LIMIT', 'OTP_IP_LIMIT', 'OTP_LOCKED', 'OTP_WRONG_CODE', 'BOOKING_DAILY_LIMIT', 'POD_WRONG_CODE'];
   const [counts, recent, noisy] = await Promise.all([
     prisma.guestAuditEvent.groupBy({ by: ['event'], where: { createdAt: { gte: since }, event: { in: types } }, _count: { _all: true } }),
-    prisma.guestAuditEvent.findMany({ where: { createdAt: { gte: since }, event: { in: types } }, orderBy: { createdAt: 'desc' }, take: 50 }),
+    prisma.guestAuditEvent.findMany({ where: { createdAt: { gte: since }, event: { in: types } }, orderBy: { createdAt: 'desc' }, take: recentLimit }),
     prisma.guestAuditEvent.groupBy({ by: ['ipHash'], where: { createdAt: { gte: since }, event: { in: types }, ipHash: { not: null } }, _count: { _all: true }, orderBy: { _count: { ipHash: 'desc' } }, take: 10 }),
   ]);
   res.status(200).json({ success: true, data: {
@@ -121,16 +123,27 @@ exports.abuse = async (req, res) => {
   } });
 };
 
+
+/** WP-09: compatible cursor paging. `limit` (default = the old fixed size, max 500) and `cursor` (an id from the previous page's nextCursor). */
+const pageParams = (q, dflt = 200, max = 500) => {
+  const limit = Math.min(max, Math.max(1, parseInt(q.limit, 10) || dflt));
+  const cursor = q.cursor ? String(q.cursor).slice(0, 64) : null;
+  return { limit, cursor, args: cursor ? { cursor: { id: cursor }, skip: 1 } : {} };
+};
+
 /** M16: SMS queue for guest bookings: delivery state, failures, and a re-queue action. Numbers are masked; message text is never stored. */
 exports.smsList = async (req, res) => {
   const smsOutbox = require('../services/smsOutbox.service');
   const status = req.query.status ? String(req.query.status).toUpperCase() : undefined;
-  const rows = await prisma.smsOutbox.findMany({ where: { ...(status ? { status } : {}), ...(req.query.kind ? { kind: String(req.query.kind).toUpperCase() } : {}) }, orderBy: { createdAt: 'desc' }, take: 200 });
+  const pg = pageParams(req.query);
+  const rows = await prisma.smsOutbox.findMany({ where: { ...(status ? { status } : {}), ...(req.query.kind ? { kind: String(req.query.kind).toUpperCase() } : {}) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: pg.limit + 1, ...pg.args });
+  const hasMore = rows.length > pg.limit; if (hasMore) rows.pop();
   const bookings = rows.length ? await prisma.guestBooking.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.bookingId))] } }, include: { identity: true } }) : [];
   const byId = new Map(bookings.map((b) => [b.id, b]));
   const visible = rows.filter((r) => { const b = byId.get(r.bookingId); return !b || canSee(req.user, b.identity.countryCode); });   // market guard
   res.status(200).json({ success: true, data: {
     stats: await smsOutbox.stats(),
+    nextCursor: hasMore ? rows[rows.length - 1].id : null,
     messages: visible.map((r) => ({ id: r.id, kind: r.kind, status: r.status, attempts: r.attempts, to: r.toMasked, lastError: r.lastError, createdAt: r.createdAt, sentAt: r.sentAt, nextAttemptAt: r.nextAttemptAt,
       bookingId: r.bookingId, reference: byId.get(r.bookingId)?.reference ?? null, canRetry: r.status === 'DEAD' && !!r.toPhone })),
   } });
@@ -154,7 +167,9 @@ const emailRowMarket = async (rows) => {
 exports.emailList = async (req, res) => {
   const emailOutbox = require('../services/emailOutbox.service');
   const status = req.query.status ? String(req.query.status).toUpperCase() : undefined;
-  const rows = await prisma.emailOutbox.findMany({ where: { ...(status ? { status } : {}), ...(req.query.provider ? { provider: String(req.query.provider).toLowerCase() } : {}) }, orderBy: { createdAt: 'desc' }, take: 200 });
+  const pg = pageParams(req.query);
+  const rows = await prisma.emailOutbox.findMany({ where: { ...(status ? { status } : {}), ...(req.query.provider ? { provider: String(req.query.provider).toLowerCase() } : {}) }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: pg.limit + 1, ...pg.args });
+  const hasMore = rows.length > pg.limit; if (hasMore) rows.pop();
   const otps = await emailRowMarket(rows);
   const bookingIds = [...new Set(rows.map((r) => r.bookingId).filter(Boolean))];
   const bookings = bookingIds.length ? await prisma.guestBooking.findMany({ where: { id: { in: bookingIds } }, include: { identity: true } }) : [];
@@ -162,6 +177,7 @@ exports.emailList = async (req, res) => {
   const visible = rows.filter((r) => { const cc = otps.get(r.otpId)?.countryCode || byBooking.get(r.bookingId)?.identity?.countryCode; return !cc || canSee(req.user, cc); });   // market guard
   res.status(200).json({ success: true, data: {
     stats: await emailOutbox.stats(),
+    nextCursor: hasMore ? rows[rows.length - 1].id : null,
     messages: visible.map((r) => ({ id: r.id, kind: r.kind, bookingId: r.bookingId ?? null, reference: byBooking.get(r.bookingId)?.reference ?? null, status: r.status, attempts: r.attempts, to: r.toMasked, provider: r.provider, routeReason: r.routeReason, errorCategory: r.errorCategory, lastError: r.lastError,
       deliveryStatus: r.deliveryStatus, deliveryAt: r.deliveryAt, createdAt: r.createdAt, sentAt: r.sentAt, nextAttemptAt: r.nextAttemptAt, canRetry: r.status === 'DEAD' && !!r.toEmail && r.errorCategory !== 'INVALID_ADDRESS' })),
   } });
@@ -226,6 +242,33 @@ exports.recipientRotate = async (req, res) => {
   res.status(200).json({ success: true, message: 'A new code was issued and the previous one no longer works. The recipient has been notified.', data: { queued: result.queued, version: result.version, expiresAt: result.expiresAt } });
 };
 
+/** M16.2.2 (Option B): resend / rotate for a REGISTERED customer's parcel (no guest booking). A guest parcel is redirected to its booking. */
+const registeredDelivery = async (req) => {
+  const d = await prisma.delivery.findUnique({ where: { id: req.params.id }, include: { customer: { select: { countryCode: true } } } });
+  if (!d || !canSee(req.user, d.customer?.countryCode)) throw new AppError('Delivery not found', 404);
+  const gb = await prisma.guestBooking.findUnique({ where: { deliveryId: d.id } });
+  if (gb) throw Object.assign(new AppError('This is a guest booking: use the booking screen.', 409), { code: 'NOT_A_PARCEL' });
+  return d;
+};
+exports.registeredResend = async (req, res) => {
+  const d = await registeredDelivery(req); let result;
+  try { result = await comms.resendRecipient({ delivery: d, countryCode: d.customer?.countryCode, adminId: req.user.id, ip: req.ip }); }
+  catch (e) { throw Object.assign(new AppError(e.message, e.statusCode || 400), { code: e.code, retryAfterS: e.retryAfterS }); }
+  await logActivity({ userId: req.user.id, action: 'recipient_notification_resent', entityType: 'Delivery', entityId: d.id, details: { reason: req.body.reason }, req });
+  comms.dispatchRegistered(d.id);
+  res.status(200).json({ success: true, message: 'Notification re-queued. The recipient gets the same code.', data: result });
+};
+exports.registeredRotate = async (req, res) => {
+  const d = await registeredDelivery(req);
+  if (req.body.confirm !== true) throw Object.assign(new AppError('Confirm that the previous code should stop working.', 400), { code: 'CONFIRM_REQUIRED' });
+  let result;
+  try { result = await comms.rotateRecipient({ delivery: d, countryCode: d.customer?.countryCode, adminId: req.user.id, ip: req.ip, reason: req.body.reason }); }
+  catch (e) { throw Object.assign(new AppError(e.message, e.statusCode || 400), { code: e.code, retryAfterS: e.retryAfterS }); }
+  await logActivity({ userId: req.user.id, action: 'recipient_code_rotated', entityType: 'Delivery', entityId: d.id, details: { version: result.version, reason: req.body.reason }, req });
+  comms.dispatchRegistered(d.id);
+  res.status(200).json({ success: true, message: 'A new code was issued and the previous one no longer works. The recipient has been notified.', data: { queued: result.queued, version: result.version, expiresAt: result.expiresAt } });
+};
+
 /** M16.2.1: pilot metrics from the outbox and audit tables (guide §16). Aggregates only: no addresses, codes or message text. */
 exports.pilotMetrics = async (req, res) => {
   const hours = Math.min(24 * 90, Math.max(1, parseInt(req.query.hours, 10) || 24 * 7));
@@ -234,16 +277,37 @@ exports.pilotMetrics = async (req, res) => {
 
 /** M16.2.1: guest parcels whose recipient has no working path to the code (every channel failed, code expired or locked). The operations work list. */
 exports.recipientAttention = async (req, res) => {
-  const since = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-  const rows = await prisma.guestBooking.findMany({ where: { ...marketFilter(req.user), service: 'PARCEL', createdAt: { gte: since } }, include: INCLUDE, orderBy: { createdAt: 'desc' }, take: 200 });
+  // WP-09: `days` (1-30, default 7), `limit` (1-200, default 100) and `cursor` (booking id from the previous page's nextCursor). Defaults keep the old behaviour.
+  const days = Math.min(30, Math.max(1, parseInt((req.query || {}).days, 10) || 7));
+  const since = new Date(Date.now() - days * 24 * 3600 * 1000);
+  const limit = Math.min(200, Math.max(1, parseInt((req.query || {}).limit, 10) || 100));
+  const cursor = (req.query || {}).cursor ? String((req.query || {}).cursor).slice(0, 64) : null;
+  const BATCH = 200;
   const out = [];
-  for (const b of rows) {
-    if (!b.delivery) continue;
-    const st = await comms.recipientStatus({ booking: b, delivery: b.delivery });
-    if (st.needsAttention) out.push({ id: b.id, reference: b.reference, deliveryStatus: b.delivery.status, createdAt: b.createdAt, overall: st.overall, recovery: st.recovery, code: st.code, email: { state: st.email.state, contact: st.email.contact }, sms: { state: st.sms.state } });
-    if (out.length >= 100) break;
+  let nextCursor = null; let scanCursor = cursor; let exhausted = false;
+  while (out.length < limit && !exhausted) {
+    const rows = await prisma.guestBooking.findMany({ where: { ...marketFilter(req.user), service: 'PARCEL', createdAt: { gte: since } }, include: INCLUDE, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: BATCH, ...(scanCursor ? { cursor: { id: scanCursor }, skip: 1 } : {}) });
+    if (rows.length < BATCH) exhausted = true;
+    for (const b of rows) {
+      scanCursor = b.id;
+      if (!b.delivery) continue;
+      const st = await comms.recipientStatus({ booking: b, delivery: b.delivery });
+      if (st.needsAttention) out.push({ id: b.id, deliveryId: b.deliveryId, source: 'GUEST', reference: b.reference, deliveryStatus: b.delivery.status, createdAt: b.createdAt, overall: st.overall, recovery: st.recovery, code: st.code, email: { state: st.email.state, contact: st.email.contact }, sms: { state: st.sms.state } });
+      if (out.length >= limit) { nextCursor = b.id; exhausted = false; break; }
+    }
   }
-  res.status(200).json({ success: true, data: { items: out } });
+  if (out.length >= limit && !nextCursor) nextCursor = scanCursor;
+  // M16.2.2: registered customers' parcels on the email flow (Option B) have no booking; they are listed with source REGISTERED and their delivery id (first page only).
+  if (comms.registeredEmailFlow() && !cursor && out.length < limit) {
+    const mk = staffMarkets(req.user);
+    const regs = await prisma.delivery.findMany({ where: { createdAt: { gte: since }, podCodeHash: { not: null }, guestBooking: { is: null }, ...(mk.length ? { customer: { countryCode: { in: mk } } } : {}) }, orderBy: { createdAt: 'desc' }, take: 200 });
+    for (const d of regs) {
+      const st = await comms.recipientStatus({ delivery: d });
+      if (st.needsAttention) out.push({ id: null, deliveryId: d.id, source: 'REGISTERED', reference: require('../services/opsAlert.service').refOfDelivery(d.id), deliveryStatus: d.status, createdAt: d.createdAt, overall: st.overall, recovery: st.recovery, code: st.code, email: { state: st.email.state, contact: st.email.contact }, sms: { state: st.sms.state } });
+      if (out.length >= limit) break;
+    }
+  }
+  res.status(200).json({ success: true, data: { items: out, nextCursor: nextCursor && out.length >= limit ? nextCursor : null, days } });
 };
 
 // ── Manual hand-over exception (guide §10/§12, action plan P1.4): request -> approve/reject, by AUTHORISED OPERATORS ONLY. The courier has no route here. ──

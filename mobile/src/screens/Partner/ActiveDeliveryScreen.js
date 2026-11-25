@@ -1,7 +1,8 @@
 // mobile/src/screens/Partner/ActiveDeliveryScreen.js
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ProofOfDeliveryPanel from '../../components/ProofOfDeliveryPanel';
-import { proofBlocksCompletion } from '../../utils/proofOfDelivery';
+import { proofBlocksCompletion, isAmbiguousFailure, completionOutcome } from '../../utils/proofOfDelivery';
+import { parseApiError } from '../../utils/apiError';
 import {
 View, Text, StyleSheet, TouchableOpacity, ScrollView,
 Alert, StatusBar, Dimensions, Animated, ActivityIndicator,
@@ -369,7 +370,15 @@ useEffect(() => {
       });
       navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] });
     } catch (err) {
-      Alert.alert(t('common.error'), err?.response?.data?.message ?? t('activeDeliveryPartner.completeDeliveryError'));
+      if (isAmbiguousFailure(err)) {
+        // No answer from the server: it may already have completed the delivery. Re-read the state instead of telling the courier it failed.
+        let outcome = 'UNKNOWN';
+        try { outcome = completionOutcome(await deliveryAPI.getActiveDelivery(), delivery.id); } catch { /* still offline */ }
+        if (outcome === 'DONE') { navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] }); return; }
+        Alert.alert(t('common.error'), 'No connection to Runserv. We could not confirm whether the delivery was completed. Check your network, then open Mark as delivered and try again.');
+        return;
+      }
+      Alert.alert(t('common.error'), parseApiError(err).message ?? t('activeDeliveryPartner.completeDeliveryError'));
     } finally { setActing(false); setShowComplete(false); }
   };
 

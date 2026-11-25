@@ -22,6 +22,10 @@ const productionProblems = (env = process.env) => {
   if (!osrm && !googleRouting && env.ALLOW_PUBLIC_OSRM !== 'true') p.push('No production routing provider: set OSRM_URL to your own routing server (or GOOGLE_ROUTES_API_KEY). The public OSRM demo server is development-only.');
   if (env.OSRM_URL && !/^https:\/\//.test(env.OSRM_URL)) p.push('OSRM_URL must be https in production.');
   if (env.BANK_RECEIPTS_ENABLED === 'true' && String(env.BANK_SECRETS_KEY || '').length < 32) p.push('BANK_SECRETS_KEY (32+ characters) is required to store bank callback secrets.');
+  // WP-03: staff MFA is mandatory in production. Without it a stolen staff password is a full admin session.
+  if (!require('./flags').isCanonicalBool(env.REQUIRE_STAFF_MFA)) p.push('REQUIRE_STAFF_MFA must be exactly "true" or "false" (got a non-canonical value).');
+  if (!require('./flags').isTrue(env.REQUIRE_STAFF_MFA) || env.REQUIRE_STAFF_MFA !== 'true') p.push('REQUIRE_STAFF_MFA=true is required in production (staff sign-in must pass the authenticator step).');
+  if (String(env.MFA_ENCRYPTION_KEY || '').length < 32) p.push('MFA_ENCRYPTION_KEY (32+ characters) is required in production to protect staff authenticator secrets.');
   p.push(...guestProblems(env));
   return p;
 };
@@ -35,6 +39,18 @@ const weakSecret = (v) => String(v || '').length < 32 || /^(secret|changeme|pass
  */
 const guestProblems = (env = process.env) => {
   const p = [];
+  // WP-07: the recipient hand-over code is keyed-hashed with GUEST_HASH_SECRET, so the registered email handover flow needs it even when guest booking is OFF.
+  // (When guest booking is on, the same secret is checked below; this block only reports the flow-only case, so there is no duplicate message.)
+  if ((truthy(env.EMAIL_DELIVERY_NOTIFICATIONS_ENABLED) || String(env.PARCEL_PILOT_SCOPE || '').trim().toLowerCase() === 'guest_and_registered') && !truthy(env.GUEST_BOOKING_ENABLED)) {
+    if (weakSecret(env.GUEST_HASH_SECRET)) p.push('GUEST_HASH_SECRET (32+ random characters) is required when EMAIL_DELIVERY_NOTIFICATIONS_ENABLED=true or PARCEL_PILOT_SCOPE=guest_and_registered, even with guest booking off.');
+    else if ([env.JWT_SECRET, env.GUEST_QUOTE_SECRET, env.GUEST_OTP_HASH_SECRET].includes(env.GUEST_HASH_SECRET)) p.push('GUEST_HASH_SECRET must differ from JWT_SECRET, GUEST_QUOTE_SECRET and GUEST_OTP_HASH_SECRET.');
+  }
+  // M16.2.2: Option B stands on the recipient EMAIL flow, with an expiring code. It must not start without both, whether or not guest booking is on.
+  if (String(env.PARCEL_PILOT_SCOPE || '').trim().toLowerCase() === 'guest_and_registered') {
+    if (!truthy(env.EMAIL_DELIVERY_NOTIFICATIONS_ENABLED)) p.push('PARCEL_PILOT_SCOPE=guest_and_registered needs EMAIL_DELIVERY_NOTIFICATIONS_ENABLED=true: registered parcels use the recipient email flow, and without it they would silently fall back to the old SMS-only path.');
+    const ttl = env.POD_CODE_TTL_HOURS;
+    if (ttl === undefined || String(ttl).trim() === '' || !(Number(ttl) > 0 && Number(ttl) <= 24 * 30)) p.push('POD_CODE_TTL_HOURS (0 < hours <= 720) is required for PARCEL_PILOT_SCOPE=guest_and_registered.');
+  }
   const planning = truthy(env.GUEST_PLANNING_ENABLED);
   const booking = truthy(env.GUEST_BOOKING_ENABLED);
   if (booking && !planning) p.push('GUEST_BOOKING_ENABLED=true requires GUEST_PLANNING_ENABLED=true (booking never turns on without its planning prerequisites).');
@@ -70,7 +86,8 @@ const guestProblems = (env = process.env) => {
       const ttl = env.POD_CODE_TTL_HOURS;
       if (ttl === undefined || String(ttl).trim() === '' || !(Number(ttl) > 0 && Number(ttl) <= 24 * 30)) p.push('POD_CODE_TTL_HOURS (hand-over code expiry, 0 < hours <= 720) is required when EMAIL_DELIVERY_NOTIFICATIONS_ENABLED=true. Product/operations choose the value; there is no default.');
       const scope = String(env.PARCEL_PILOT_SCOPE || '').trim().toLowerCase();
-      if (scope !== 'guest_only') p.push(scope === 'guest_and_registered' ? 'PARCEL_PILOT_SCOPE=guest_and_registered is not supported yet: registered-customer parcels have no email recipient flow. Use guest_only.' : 'PARCEL_PILOT_SCOPE=guest_only is required when EMAIL_DELIVERY_NOTIFICATIONS_ENABLED=true (record the pilot-scope decision explicitly).');
+      // M16.2.2: Option B (guest_and_registered) is built: registered parcels ride the same recipient email flow. Either value is a RECORDED decision; unset is not.
+      if (scope !== 'guest_only' && scope !== 'guest_and_registered') p.push('PARCEL_PILOT_SCOPE must be set to guest_only (Option A) or guest_and_registered (Option B) when EMAIL_DELIVERY_NOTIFICATIONS_ENABLED=true (record the pilot-scope decision explicitly).');
     }
     if (deliverySmsOn && (!env.TERMII_API_KEY || !env.TERMII_SENDER_ID)) p.push('TERMII_API_KEY and TERMII_SENDER_ID are required when SMS delivery notifications are enabled.');
     if (emailOn) {

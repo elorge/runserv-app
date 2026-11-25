@@ -70,9 +70,20 @@ const endAssignment = async ({ fleetPartnerId, assignmentId, actor, req, status 
   const a = await prisma.fleetDriverAssignment.findFirst({ where: { id: assignmentId, fleetPartnerId } });
   if (!a) throw new AppError('Assignment not found.', 404);
   if (a.status !== 'ACTIVE') throw new AppError('This assignment is already closed.', 400);
-  const active = await prisma.fleetTrip.findFirst({ where: { driverUserId: a.driverUserId, vehicleId: a.vehicleId, status: { in: ['ACCEPTED', 'IN_PROGRESS'] } }, select: { id: true } });
-  if (active) throw new AppError('The driver has a trip in progress. End the assignment after it completes.', 409);
-  const row = await prisma.fleetDriverAssignment.update({ where: { id: assignmentId }, data: { status, endsAt: new Date() } });
+  // The authoritative records are the Ride and Delivery rows themselves (FleetTrip is only written on completion). Check and close in ONE
+  // transaction under a per-driver lock, so the driver cannot be mid-trip when the assignment ends.
+  const row = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'fleet-driver:' + a.driverUserId}))`;
+    const [ride, delivery, fleetTrip] = await Promise.all([
+      tx.ride.findFirst({ where: { driverId: a.driverUserId, status: { in: ['ACCEPTED', 'ARRIVED', 'IN_PROGRESS'] } }, select: { id: true } }),
+      tx.delivery.findFirst({ where: { partnerId: a.driverUserId, status: { in: ['ASSIGNED', 'PICKED_UP', 'IN_TRANSIT'] } }, select: { id: true } }),
+      tx.fleetTrip.findFirst({ where: { driverUserId: a.driverUserId, vehicleId: a.vehicleId, status: { in: ['ACCEPTED', 'IN_PROGRESS'] } }, select: { id: true } }),
+    ]);
+    if (ride || delivery || fleetTrip) throw new AppError('The driver has a trip in progress. End the assignment after it completes.', 409);
+    const closed = await tx.fleetDriverAssignment.updateMany({ where: { id: assignmentId, status: 'ACTIVE' }, data: { status, endsAt: new Date() } });
+    if (closed.count !== 1) throw new AppError('This assignment is already closed.', 400);
+    return tx.fleetDriverAssignment.findUnique({ where: { id: assignmentId } });
+  });
   await logActivity({ userId: actor, action: 'fleet_driver_unassigned', entityType: 'FleetDriverAssignment', entityId: assignmentId, details: { fleetPartnerId, status }, req });
   return row;
 };
@@ -265,7 +276,27 @@ const SETTLEMENT_FLOW = { PENDING: ['RECONCILING', 'CANCELLED'], RECONCILING: ['
  * Concurrency (guide §4.2): the write is a CONDITIONAL update (`WHERE id AND status = <status we validated against>`).
  * If another request already moved the record, zero rows change and we answer 409 instead of overwriting the newer state.
  */
-const transitionSettlement = async ({ id, to, actor, req }) => {
+const PAYMENT_METHODS = ['BANK_TRANSFER', 'MOBILE_MONEY', 'OTHER'];
+const maskPayout = (f) => `${f.payoutBankCode || '???'} ••••${String(f.payoutAccountNumber || '').slice(-4)}`;
+
+/** PAID requires evidence: a unique payment reference, a method, and an amount equal to the statement's net. Returns the columns to store. */
+const validatePaymentEvidence = (s, fleetRow, evidence) => {
+  const e = evidence || {};
+  const reference = String(e.paymentReference || '').trim();
+  if (reference.length < 5 || reference.length > 80) throw new AppError('A payment reference (5–80 characters) from the bank advice is required to mark a settlement paid.', 400);
+  if (!PAYMENT_METHODS.includes(e.paymentMethod)) throw new AppError(`paymentMethod must be one of ${PAYMENT_METHODS.join(', ')}.`, 400);
+  if (e.paidAmount === undefined || e.paidAmount === null || e.paidAmount === '') throw new AppError('The amount paid is required.', 400);
+  if (toMinor(e.paidAmount) !== toMinor(s.netAmount)) { const err = new AppError(`Amount paid (${e.paidAmount}) does not equal the statement net (${s.netAmount}).`, 400); err.code = 'PAID_AMOUNT_MISMATCH'; throw err; }
+  if (!fleetRow || fleetRow.verificationStatus !== 'VERIFIED') { const err = conflict('The fleet account is not verified, so it cannot be paid.', 'FLEET_NOT_VERIFIED'); throw err; }
+  if (!fleetRow.payoutAccountNumber || !fleetRow.payoutBankCode) throw conflict('The fleet has no payout account on file.', 'PAYOUT_ACCOUNT_MISSING');
+  return {
+    paymentReference: reference, paymentMethod: e.paymentMethod, paidAmount: fromMinor(toMinor(e.paidAmount)),
+    paymentProofRef: e.paymentProofRef ? String(e.paymentProofRef).slice(0, 300) : null, paymentNote: e.paymentNote ? String(e.paymentNote).slice(0, 500) : null,
+    payoutAccountMasked: maskPayout(fleetRow),
+  };
+};
+
+const transitionSettlement = async ({ id, to, actor, req, evidence = null }) => {
   const s = await prisma.fleetSettlement.findUnique({ where: { id } });
   if (!s) throw new AppError('Settlement not found.', 404);
   if (!SETTLEMENT_FLOW[s.status]?.includes(to)) throw new AppError(`Cannot move a ${s.status} settlement to ${to}.`, 400);
@@ -273,14 +304,22 @@ const transitionSettlement = async ({ id, to, actor, req }) => {
     const approval = await prisma.activityLog.findFirst({ where: { entityType: 'FleetSettlement', entityId: id, action: 'fleet_settlement_approved' }, orderBy: { createdAt: 'desc' }, select: { userId: true } });
     if (approval && approval.userId === actor) throw new AppError('A different admin must mark this settlement as paid (maker–checker).', 403);
   }
-  const { count } = await prisma.fleetSettlement.updateMany({
-    where: { id, status: s.status },
-    data: { status: to, ...(to === 'PAID' && { paidAt: new Date() }) },
-  });
+  let paid = {};
+  if (to === 'PAID') {
+    const fleetRow = await prisma.fleetPartner.findUnique({ where: { id: s.fleetPartnerId } });
+    paid = { ...validatePaymentEvidence(s, fleetRow, evidence), paidAt: new Date(), paidById: actor || null };
+  }
+  let count;
+  try {
+    ({ count } = await prisma.fleetSettlement.updateMany({ where: { id, status: s.status }, data: { status: to, ...paid } }));
+  } catch (e) {
+    if (e.code === 'P2002') throw conflict('That payment reference is already recorded against another settlement.', 'DUPLICATE_PAYMENT_REFERENCE');
+    throw e;
+  }
   if (count !== 1) throw conflict('This settlement was changed by someone else. Reload and try again.', 'SETTLEMENT_STATE_CHANGED');
   const row = await prisma.fleetSettlement.findUnique({ where: { id } });
-  await logActivity({ userId: actor, action: `fleet_settlement_${to.toLowerCase()}`, entityType: 'FleetSettlement', entityId: id, details: { from: s.status, to, fleetPartnerId: s.fleetPartnerId }, req });
+  await logActivity({ userId: actor, action: `fleet_settlement_${to.toLowerCase()}`, entityType: 'FleetSettlement', entityId: id, details: { from: s.status, to, fleetPartnerId: s.fleetPartnerId, ...(to === 'PAID' && { paymentReference: paid.paymentReference, paymentMethod: paid.paymentMethod, paidAmount: paid.paidAmount, payoutAccountMasked: paid.payoutAccountMasked }) }, req });
   return row;
 };
 
-module.exports = { assertDriverApproved, assignDriver, endAssignment, assertDriverDispatchable, getDispatchStatus, recordFleetTrip, summariseTrips, createSettlement, transitionSettlement, SETTLEMENT_FLOW, vehicleCompliance };
+module.exports = { assertDriverApproved, assignDriver, endAssignment, assertDriverDispatchable, getDispatchStatus, recordFleetTrip, summariseTrips, createSettlement, transitionSettlement, validatePaymentEvidence, PAYMENT_METHODS, SETTLEMENT_FLOW, vehicleCompliance };

@@ -528,7 +528,7 @@ const payDriverNow = async ({ userId, tripId, amount, company }) => {
   const reference = `ORGTRIP-${tripId}`;
   try {
     await prisma.$transaction([
-      prisma.wallet.update({ where: { id: w.id }, data: { balance: { increment: amount } } }),
+      ...require('./walletOps').creditOps(prisma, { walletId: w.id, currency: w.currency || company.currency, amount, refType: 'ORG_TRIP_PAYOUT', refId: reference, memo: `${company.name} trip`, idempotencyKey: `ORG_TRIP_PAYOUT:${reference}` }),
       prisma.walletTransaction.create({ data: { walletId: w.id, type: 'CREDIT', amount, status: 'COMPLETED', reference, description: `${company.name} trip — paid from company wallet` } }),
       prisma.corporateTrip.update({ where: { id: tripId }, data: { driverPaidAmount: amount } }),
     ]);

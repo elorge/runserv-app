@@ -120,7 +120,7 @@ exports.createSettlement = async (req, res) => {
 };
 
 exports.transitionSettlement = async (req, res) => {
-  const row = await fleet.transitionSettlement({ id: req.params.id, to: req.body.status, actor: req.user.id, req });
+  const row = await fleet.transitionSettlement({ id: req.params.id, to: req.body.status, actor: req.user.id, req, evidence: req.body.status === 'PAID' ? { paymentReference: req.body.paymentReference, paymentMethod: req.body.paymentMethod, paidAmount: req.body.paidAmount, paymentProofRef: req.body.paymentProofRef, paymentNote: req.body.paymentNote } : null });
   return ok(res, { settlement: row });
 };
 

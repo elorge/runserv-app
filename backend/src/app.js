@@ -175,6 +175,7 @@ if (ENABLE_BANK_OFFERS) {
   app.use('/api/bank-webhooks', express.raw({ type: '*/*', limit: '256kb' }), (req, _res, next) => { req.rawBody = req.body; next(); });
 }
 // M16.1: email provider webhooks (Brevo token, Resend/Svix signature over the exact bytes).
+app.use('/api/sms-webhooks', express.raw({ type: '*/*', limit: '256kb' }), (req, _res, next) => { req.rawBody = req.body; next(); });
 app.use('/api/email-webhooks', express.raw({ type: '*/*', limit: '256kb' }), (req, _res, next) => { req.rawBody = req.body; next(); });
 app.use(
   '/api/wallet/topup/verify',
@@ -280,6 +281,9 @@ app.use('/api/drivers',       driverRoutes);
 app.use('/api/partners',      partnerRoutes);
 app.use('/api/payments',      paymentRoutes);
 app.use('/api/upload',        uploadRoutes);
+app.use('/api/admin/audit-logs', require('./routes/adminAudit.routes')); // WP-09 audit viewer
+app.use('/api/admin/finance', require('./routes/adminFinance.routes')); // WP-01 reconciliation + ledger viewer
+app.use('/api/admin/alerts',  require('./routes/adminAlerts.routes')); // WP-08 (before the generic admin router)
 app.use('/api/admin',         adminRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/wallet',        walletRoutes);
@@ -287,6 +291,7 @@ app.use('/api/calls',         callRoutes);
 app.use('/api/places',        placesRoutes); 
 app.use('/api/countries',     countriesRoutes);
 
+app.use('/api/sms-webhooks', require('./routes/smsWebhook.routes'));       // WP-07: SMS delivery receipts -> smsOutbox.applyReceipt (authenticated inside)
 app.use('/api/email-webhooks', require('./routes/emailWebhook.routes'));   // M16.1: Brevo / Resend delivery events (authenticated inside)
 if (ENABLE_CORPORATE) app.use('/api/corporate', corporateRoutes);
 if (ENABLE_FLEET)     app.use('/api/fleet', require('./routes/fleet.routes'));
