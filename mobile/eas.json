@@ -5,42 +5,54 @@
   },
   "build": {
     "development-customer": {
+      "node": "22.19.0",
       "developmentClient": true,
       "distribution": "internal",
       "env": {
         "APP_VARIANT": "customer"
-      }
+      },
+      "environment": "development"
     },
     "development-driver": {
+      "node": "22.19.0",
       "developmentClient": true,
       "distribution": "internal",
       "env": {
         "APP_VARIANT": "driver"
-      }
+      },
+      "environment": "development"
     },
     "preview-customer": {
+      "node": "22.19.0",
       "distribution": "internal",
       "env": {
         "APP_VARIANT": "customer"
-      }
+      },
+      "environment": "preview"
     },
     "preview-driver": {
+      "node": "22.19.0",
       "distribution": "internal",
       "env": {
         "APP_VARIANT": "driver"
-      }
+      },
+      "environment": "preview"
     },
     "production-customer": {
+      "node": "22.19.0",
       "autoIncrement": true,
       "env": {
         "APP_VARIANT": "customer"
-      }
+      },
+      "environment": "production"
     },
     "production-driver": {
+      "node": "22.19.0",
       "autoIncrement": true,
       "env": {
         "APP_VARIANT": "driver"
-      }
+      },
+      "environment": "production"
     }
   },
   "submit": {

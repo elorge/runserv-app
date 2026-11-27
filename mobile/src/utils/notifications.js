@@ -3,7 +3,9 @@
 // Every Firebase call is defensive: a missing/unconfigured native module must never crash the app.
 import { Alert, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import api from '../services/api';
+import { APP_VARIANT } from '../config/variant';
 
 let messaging = null;
 try { messaging = require('@react-native-firebase/messaging').default; } catch { messaging = null; }
@@ -38,7 +40,7 @@ export const registerDeviceToken = async (token) => {
   try {
     const t = token || (await AsyncStorage.getItem('fcmToken')) || (await getFCMToken());
     if (!t) return false;
-    await api.post('/notifications/devices', { token: t, platform: platform(), deviceId: await deviceId() });
+    await api.post('/notifications/devices', { token: t, platform: platform(), deviceId: await deviceId(), appVariant: Constants.expoConfig?.extra?.appVariant });
     return true;
   } catch { return false; }
 };
@@ -54,15 +56,30 @@ export const unregisterDeviceToken = async () => {
   } catch { return false; }
 };
 
-/** Map a push payload (data.route / data.type) to a navigation target. Returns { name, params } or null. */
+/** Map a push payload to a navigation target { name, params } or null.
+ *  The API sends data.route as a stable key (ride | delivery | wallet | account | ops_alert | notifications) plus rideId / deliveryId.
+ *  Screens live inside tabs, so we target the tab and the nested screen. */
 export const routeForNotification = (data = {}) => {
-  const id = data.id || data.rideId || data.deliveryId || data.bookingId;
-  if (data.route) return { name: String(data.route), params: id ? { id } : undefined };
+  const driver = APP_VARIANT.id === 'driver';
   const t = String(data.type || '').toUpperCase();
-  if (t.startsWith('RIDE')) return { name: 'RideDetails', params: { rideId: data.rideId || id } };
-  if (t.startsWith('DELIVERY') || t.startsWith('POD')) return { name: 'DeliveryDetails', params: { deliveryId: data.deliveryId || id } };
-  if (t.startsWith('WALLET') || t.startsWith('PAYMENT') || t.startsWith('PAYOUT')) return { name: 'Wallet' };
-  return t ? { name: 'Notifications' } : null;
+  const key = String(data.route || '').toLowerCase()
+    || (t.startsWith('RIDE') ? 'ride' : t.startsWith('DELIVERY') || t.startsWith('POD') ? 'delivery'
+      : /^(WALLET|PAYMENT|PAYOUT)/.test(t) ? 'wallet' : t ? 'notifications' : '');
+  if (!key) return null;
+  const home = driver ? 'DashboardTab' : 'HomeTab';
+  switch (key) {
+    case 'ride':
+      return data.rideId
+        ? { name: home, params: { screen: driver ? 'ActiveRide' : 'RideTracking', params: { rideId: data.rideId } } }
+        : { name: home, params: { screen: 'Notifications' } };
+    case 'delivery':
+      return data.deliveryId
+        ? { name: home, params: { screen: driver ? 'ActiveDelivery' : 'DeliveryTracking', params: { deliveryId: data.deliveryId } } }
+        : { name: home, params: { screen: 'Notifications' } };
+    case 'wallet':  return { name: driver ? 'EarningsTab' : 'WalletTab' };
+    case 'account': return { name: 'ProfileTab' };
+    default:        return { name: home, params: { screen: 'Notifications' } };
+  }
 };
 
 export const setupNotificationListeners = (navigate) => {

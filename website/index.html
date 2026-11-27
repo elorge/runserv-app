@@ -3,125 +3,203 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Runserv — rides, deliveries and business mobility across Africa</title>
-<meta name="description" content="Runserv connects riders, businesses, fleets and banks on one platform. See a sample dashboard and request a demo.">
+<title>Runserv: rides, deliveries and business mobility, starting in Lagos</title>
+<meta name="description" content="Runserv lets companies move staff and parcels on one monthly invoice, gives fleets and drivers a clear payout trail, and gives riders a simple app. Request a demo.">
+<link rel="canonical" href="https://runserv.org/">
+<meta property="og:type" content="website"><meta property="og:site_name" content="Runserv"><meta property="og:url" content="https://runserv.org/">
+<meta property="og:title" content="Runserv: rides, deliveries and business mobility">
+<meta property="og:description" content="One platform for companies, fleets, drivers and riders. Starting in Lagos.">
+<meta name="twitter:card" content="summary"><meta name="theme-color" content="#12306b">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2312306b'/%3E%3Cpath d='M18 46V18h16a9 9 0 0 1 2 17.8L44 46h-8l-6-9h-5v9z M25 24v7h9a3.5 3.5 0 0 0 0-7z' fill='%23f2a900'/%3E%3C/svg%3E">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Runserv","url":"https://runserv.org","email":"support@runserv.org"}</script>
 <style>
-:root{--bg:#fff;--soft:#f4f6fb;--ink:#0f1b33;--mute:#56627a;--line:#e2e7f0;--brand:#12306b;--accent:#f2a900;--ok:#0e8f5b;--card:#fff}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0b1222;--soft:#111b30;--ink:#eef2fb;--mute:#9aa8c4;--line:#22304d;--brand:#7fa6ff;--accent:#f2b629;--ok:#35c98a;--card:#0f192d}}
-*{box-sizing:border-box}html{scroll-behavior:smooth}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-a{color:inherit}.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
-header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);z-index:5}
-header .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
-.logo{font-weight:800;font-size:20px;letter-spacing:-.02em;text-decoration:none}.logo b{color:var(--accent)}
-nav a{margin-left:20px;text-decoration:none;color:var(--mute);font-size:14px}
-.btn{display:inline-block;background:var(--brand);color:#fff;border:0;border-radius:10px;padding:12px 22px;font:600 15px inherit;cursor:pointer;text-decoration:none}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .btn{color:#0b1222}}
-.btn.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
-.hero{padding:72px 0 56px;background:linear-gradient(180deg,var(--soft),var(--bg))}
-.hero h1{font-size:clamp(32px,5vw,52px);line-height:1.1;letter-spacing:-.03em;margin:0 0 16px;max-width:15em}
-.hero p{font-size:19px;color:var(--mute);max-width:36em;margin:0 0 28px}.hero .btn{margin:0 10px 10px 0}
-section{padding:56px 0}section h2{font-size:30px;letter-spacing:-.02em;margin:0 0 8px}.lead{color:var(--mute);margin:0 0 28px;max-width:40em}
-.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--mute);font-size:15px}
-.tag{display:inline-block;font-size:12px;font-weight:700;color:var(--brand);background:var(--soft);border-radius:99px;padding:2px 10px;margin-bottom:10px}
-.soft{background:var(--soft)}
-.steps{counter-reset:s;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
-.steps div{position:relative;padding-top:44px}.steps div:before{counter-increment:s;content:counter(s);position:absolute;top:0;left:0;width:34px;height:34px;border-radius:50%;background:var(--accent);color:#1a1300;font-weight:800;display:grid;place-items:center}
+:root{--bg:#fbfaf7;--soft:#f1efe8;--ink:#0d1a33;--mute:#55607a;--line:#e0ddd3;--brand:#12306b;--accent:#f2a900;--ok:#0e8f5b;--card:#fff;--on:#fff}
+:root[data-theme=dark]{--bg:#0a1122;--soft:#101a31;--ink:#eef1f8;--mute:#9aa7c2;--line:#21304f;--brand:#8db0ff;--accent:#f2b629;--ok:#35c98a;--card:#0e182c;--on:#0a1122}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:70px}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:inherit}.wrap{max-width:1100px;margin:0 auto;padding:0 20px}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.skip{position:absolute;left:-999px}.skip:focus{left:10px;top:10px;background:var(--card);padding:8px 12px;z-index:20}
+header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;gap:12px;height:62px}
+.logo{font-weight:900;font-size:22px;letter-spacing:-.04em;text-decoration:none}.logo b{color:var(--accent)}
+nav{margin-left:auto;display:flex;align-items:center;gap:4px}nav a{padding:8px 12px;text-decoration:none;color:var(--mute);font-size:14px;border-radius:8px}nav a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--brand);color:var(--on);border:0;border-radius:10px;padding:12px 22px;font-family:inherit;font-weight:700;font-size:15px;cursor:pointer;text-decoration:none}
+.btn.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}.btn.sm{padding:8px 16px;font-size:14px}
+.ico{background:transparent;border:1px solid var(--line);color:var(--ink);border-radius:10px;width:40px;height:40px;cursor:pointer;font-size:17px}
+#menu{display:none}
+@media(max-width:760px){#menu{display:block}nav{position:absolute;top:62px;left:0;right:0;background:var(--bg);border-bottom:1px solid var(--line);flex-direction:column;align-items:stretch;padding:10px 20px;display:none}nav.open{display:flex}nav a{padding:12px 4px}}
+.hero{padding:64px 0 40px;background:radial-gradient(900px 400px at 85% -10%,color-mix(in srgb,var(--accent) 22%,transparent),transparent),var(--bg)}
+.hero .wrap{display:grid;gap:36px;grid-template-columns:1.15fr .85fr;align-items:center}@media(max-width:860px){.hero .wrap{grid-template-columns:1fr}}
+.eyebrow{font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--brand)}
+h1{font-size:clamp(34px,5.4vw,60px);line-height:1.03;letter-spacing:-.045em;margin:10px 0 16px;font-weight:900}
+.hero p.sub{font-size:19px;color:var(--mute);max-width:34em;margin:0 0 22px;min-height:5.6em}
+.roles{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px}
+.roles button,.chips label span,.tabs button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:8px 16px;font-family:inherit;font-weight:600;font-size:14px;cursor:pointer}
+.roles button[aria-pressed=true],.tabs button[aria-selected=true],.chips input:checked+span{background:var(--brand);color:var(--on);border-color:var(--brand)}
+.ticket{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px;box-shadow:0 18px 50px rgba(13,26,51,.12)}
+.ticket svg{width:100%;height:auto;display:block}.ticket .row{display:flex;justify-content:space-between;font-size:14px;padding:8px 0;border-top:1px dashed var(--line);color:var(--mute)}.ticket .row b{color:var(--ink)}
+.route{stroke-dasharray:6 7;animation:dash 1.4s linear infinite}@keyframes dash{to{stroke-dashoffset:-26}}
+@media(prefers-reduced-motion:reduce){.route{animation:none}html{scroll-behavior:auto}}
+section{padding:60px 0}section h2{font-size:clamp(26px,3.6vw,36px);letter-spacing:-.03em;line-height:1.1;margin:0 0 10px}.lead{color:var(--mute);max-width:40em;margin:0 0 28px}.soft{background:var(--soft)}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px}.card h3{margin:0 0 6px;font-size:18px}.card p{margin:0;color:var(--mute);font-size:15px}
+.tag{display:inline-block;font-size:12px;font-weight:800;color:var(--brand);background:var(--soft);border-radius:99px;padding:2px 10px;margin-bottom:10px}
+.steps{counter-reset:s;display:grid;gap:20px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}.steps div{position:relative;padding-top:48px}
+.steps div:before{counter-increment:s;content:counter(s);position:absolute;top:0;left:0;width:36px;height:36px;border-radius:50%;background:var(--accent);color:#1a1300;font-weight:900;display:grid;place-items:center}
 .steps h3{margin:0 0 4px;font-size:17px}.steps p{margin:0;color:var(--mute);font-size:15px}
-.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}.tabs button{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:99px;padding:7px 16px;font:600 14px inherit;cursor:pointer}
-.tabs button[aria-selected=true]{background:var(--brand);color:#fff;border-color:var(--brand)}
-@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .tabs button[aria-selected=true]{color:#0b1222}}
-.dash{border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden;box-shadow:0 10px 30px rgba(15,27,51,.08)}
-.bar{display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft);font-size:12px;color:var(--mute)}.bar i{width:10px;height:10px;border-radius:50%;background:var(--line)}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.dash{border:1px solid var(--line);border-radius:16px;background:var(--card);overflow:hidden}
+.bar{display:flex;gap:6px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft);font-size:12px;color:var(--mute)}.bar i{width:10px;height:10px;border-radius:50%;background:var(--line)}
 .body{padding:18px;overflow-x:auto}.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px}
 .kpi{border:1px solid var(--line);border-radius:12px;padding:12px}.kpi small{color:var(--mute);display:block;font-size:12px}.kpi b{font-size:22px}
-table{width:100%;border-collapse:collapse;font-size:14px;min-width:460px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}th{color:var(--mute);font-weight:600;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:14px;min-width:460px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}th{color:var(--mute);font-size:12px}
 .pill{font-size:12px;font-weight:700;border-radius:99px;padding:2px 9px;background:var(--soft)}.pill.ok{color:var(--ok)}.pill.wait{color:#b26a00}
 .note{font-size:13px;color:var(--mute);margin-top:10px}
-form{display:grid;gap:12px;max-width:560px}label{font-size:14px;font-weight:600;display:grid;gap:4px}
-input,select,textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;width:100%}
+details{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:10px}summary{cursor:pointer;font-weight:700}details p{margin:10px 0 0;color:var(--mute)}
+.contact{display:grid;gap:28px;grid-template-columns:1.2fr .8fr}@media(max-width:860px){.contact{grid-template-columns:1fr}}
+form{display:grid;gap:14px}label.f{font-size:14px;font-weight:700;display:grid;gap:5px}
+input:not([type=radio]):not([type=checkbox]),select,textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%}
+.chips{display:flex;flex-wrap:wrap;gap:8px;border:0;padding:0;margin:0}.chips legend{font-size:14px;font-weight:700;margin-bottom:6px;padding:0}.chips label{display:block}.chips input{position:absolute;opacity:0}.chips input:focus-visible+span{outline:3px solid var(--accent)}
+.chk{display:flex;gap:10px;font-size:14px;color:var(--mute);align-items:flex-start}.chk input{margin-top:5px}
 .hp{position:absolute;left:-9999px;height:0;overflow:hidden}
-#msg{font-weight:600}#msg.ok{color:var(--ok)}#msg.err{color:#c0392b}
-footer{border-top:1px solid var(--line);padding:28px 0;color:var(--mute);font-size:14px}
+#msg{font-weight:700;min-height:1.5em}#msg.ok{color:var(--ok)}#msg.err{color:#c0392b}
+.side .card{margin-bottom:12px}.side a.l{display:flex;justify-content:space-between;gap:8px;text-decoration:none;padding:10px 0;border-bottom:1px solid var(--line)}.side a.l:last-child{border:0}
+footer{border-top:1px solid var(--line);padding:30px 0;color:var(--mute);font-size:14px}footer .wrap{display:flex;flex-wrap:wrap;gap:12px 24px;justify-content:space-between}footer a{margin-right:16px}
+.legal{display:none;padding:50px 0;max-width:760px}.legal h1{font-size:34px}.legal h2{font-size:20px;margin:26px 0 6px}.legal p,.legal li{color:var(--mute)}
+body.lg main{display:none}body.lg .legal.on{display:block}
 </style>
 </head>
 <body>
-<header><div class="wrap"><a class="logo" href="#">Run<b>serv</b></a><nav><a href="#who">Who it’s for</a><a href="#how">How it works</a><a href="#sample">Sample dashboard</a><a class="btn" href="#demo" style="margin-left:20px;padding:8px 16px">Request a demo</a></nav></div></header>
+<a class="skip" href="#contact">Skip to contact</a>
+<header><div class="wrap"><a class="logo" href="#top">Run<b>serv</b></a>
+<nav id="nav" aria-label="Main"><a href="#who">Who it’s for</a><a href="#how">How it works</a><a href="#sample">Sample screens</a><a href="#faq">FAQ</a><a class="btn sm" href="#contact">Request a demo</a></nav>
+<button class="ico" id="theme" aria-label="Switch light or dark theme" title="Theme">◐</button><button class="ico" id="menu" aria-label="Menu" aria-expanded="false">☰</button></div></header>
 
-<main>
+<main id="top">
 <div class="hero"><div class="wrap">
-<h1>One platform for rides, deliveries and business mobility.</h1>
-<p>Runserv brings riders, drivers, delivery partners, companies, fleets and banks onto a single, auditable system, with payments that settle where they should and a dashboard for every role.</p>
-<a class="btn" href="#demo">Request a demo</a><a class="btn alt" href="#sample">See a sample dashboard</a>
+<div><div class="eyebrow">Rides · Deliveries · Business mobility</div>
+<h1 id="h">Move your people and parcels. Pay once a month.</h1>
+<p class="sub" id="sub"></p>
+<div class="roles" role="group" aria-label="I am a"><button aria-pressed="true" data-r="co">A company</button><button aria-pressed="false" data-r="fl">A fleet owner</button><button aria-pressed="false" data-r="dr">A driver</button><button aria-pressed="false" data-r="bk">A bank</button></div>
+<a class="btn" id="cta" href="#contact">Request a demo</a> <a class="btn alt" href="#sample">See sample screens</a></div>
+<div class="ticket" aria-hidden="true"><svg viewBox="0 0 320 170"><rect width="320" height="170" rx="12" fill="var(--soft)"/><path d="M0 120h320M0 60h320M90 0v170M220 0v170" stroke="var(--line)" stroke-width="6"/><path class="route" d="M40 130C90 130 100 60 160 70S250 40 282 36" fill="none" stroke="var(--brand)" stroke-width="4" stroke-linecap="round"/><circle cx="40" cy="130" r="9" fill="var(--ok)"/><circle cx="282" cy="36" r="9" fill="var(--accent)"/></svg>
+<div class="row"><span>Trip purpose</span><b>Client visit</b></div><div class="row"><span>Billed to</span><b>Company account</b></div><div class="row"><span>Approval</span><b>Within policy</b></div></div>
 </div></div>
 
-<section id="who"><div class="wrap">
-<h2>Built for each side of the market</h2><p class="lead">Everyone signs in to the same Runserv, and sees only what their role allows.</p>
+<section id="who"><div class="wrap"><h2>Built for each side of the market</h2><p class="lead">Everyone signs in to the same Runserv and sees only what their role allows.</p>
 <div class="grid">
-<div class="card"><span class="tag">Businesses</span><h3>Corporate accounts</h3><p>Staff rides and deliveries on one monthly invoice, with budgets, approvals and a prepaid wallet you can top up by bank transfer.</p></div>
-<div class="card"><span class="tag">Fleet owners</span><h3>Fleet portal</h3><p>Register vehicles and drivers, track documents and earnings, and see exactly what is owed to you.</p></div>
-<div class="card"><span class="tag">Banks</span><h3>Partner offers</h3><p>Run reviewed campaigns for your customers and settle what is owed through a clear, matched payment trail.</p></div>
-<div class="card"><span class="tag">Riders &amp; drivers</span><h3>The mobile app</h3><p>Request a ride or delivery, pay from a wallet, and get paid out to a bank or mobile-money account.</p></div>
+<div class="card"><span class="tag">Companies</span><h3>Staff rides and deliveries</h3><p>Departments, budgets, approval rules and a prepaid wallet or monthly invoice. Every trip has a purpose and a cost centre.</p></div>
+<div class="card"><span class="tag">Fleet owners</span><h3>Fleet portal</h3><p>Register vehicles and drivers, track document expiry, and see exactly what is owed to you.</p></div>
+<div class="card"><span class="tag">Drivers &amp; couriers</span><h3>The driver app</h3><p>Accept jobs, see earnings clearly and get paid out to a bank or mobile-money account.</p></div>
+<div class="card"><span class="tag">Riders</span><h3>The Runserv app</h3><p>Book a ride or send a parcel, pay from a wallet, and let your employer cover work trips.</p></div>
+<div class="card"><span class="tag">Banks</span><h3>Partner offers</h3><p>Run reviewed campaigns for your customers, with every payment matched to a clear trail.</p></div>
 </div></div></section>
 
-<section class="soft" id="how"><div class="wrap">
-<h2>How a company pays Runserv</h2><p class="lead">No manual chasing. The company’s reference does the matching.</p>
-<div class="steps">
-<div><h3>See where to pay</h3><p>The company’s Billing page lists Runserv’s bank accounts and a reference for its wallet and for each open invoice.</p></div>
-<div><h3>Transfer from your bank</h3><p>Pay into any listed account and put the reference in the narration. Use whichever bank suits you.</p></div>
-<div><h3>It settles itself</h3><p>When the bank reports the credit, it is matched to the right wallet or invoice and shows on the company’s dashboard and in Runserv’s records.</p></div>
-</div>
-<p class="note">Anything unclear (a missing reference, a wrong amount) goes to a review queue instead of being guessed, and manual entries need a second person’s approval.</p>
+<section class="soft" id="how"><div class="wrap"><h2>How a company pays Runserv</h2><p class="lead">No manual chasing. The company’s reference does the matching.</p>
+<div class="steps"><div><h3>See where to pay</h3><p>The Billing page lists Runserv’s bank accounts and a reference for the wallet and each open invoice.</p></div><div><h3>Transfer from your bank</h3><p>Pay into any listed account and put the reference in the narration.</p></div><div><h3>It settles itself</h3><p>When the bank reports the credit, it is matched to the right wallet or invoice.</p></div></div>
+<p class="note">Anything unclear, such as a missing reference or wrong amount, goes to a review queue instead of being guessed. Manual entries need a second person’s approval.</p></div></section>
+
+<section id="sample"><div class="wrap"><h2>A look inside</h2><p class="lead">Sample screens with made-up data, so you can see how each role works day to day.</p>
+<div class="tabs" role="tablist" aria-label="Sample screens"><button role="tab" id="t-co" aria-selected="true" aria-controls="panel" data-t="co">Company</button><button role="tab" id="t-fl" aria-selected="false" tabindex="-1" aria-controls="panel" data-t="fl">Fleet</button><button role="tab" id="t-fi" aria-selected="false" tabindex="-1" aria-controls="panel" data-t="fi">Payments</button></div>
+<div class="dash"><div class="bar"><i></i><i></i><i></i><span style="margin-left:8px" id="url"></span></div><div class="body" id="panel" role="tabpanel" aria-live="polite"></div></div>
+<p class="note">Sample data only. Names, amounts and references are illustrative.</p></div></section>
+
+<section class="soft" id="faq"><div class="wrap"><h2>Questions</h2><p class="lead">Short answers. Ask us anything else below.</p>
+<details><summary>Where does Runserv operate?</summary><p>We are starting in Lagos. Tell us your city in the form and we will say when we get there.</p></details>
+<details><summary>Do drivers need a wallet balance to take company trips?</summary><p>No. Drivers accept company trips without any wallet balance, and no cash is collected.</p></details>
+<details><summary>Can a company pay on credit?</summary><p>Every company starts prepaid. Monthly credit is switched on only after we verify the company and agree a limit and written terms.</p></details>
+<details><summary>How do fleets get paid?</summary><p>Settlements show each trip, our fee and your net. Only owners, admins and finance staff can see the money.</p></details>
+<details><summary>Is my data safe?</summary><p>We collect only what is needed to run the service. See the <a href="#privacy">privacy notice</a>.</p></details>
 </div></section>
 
-<section id="sample"><div class="wrap">
-<h2>A look inside</h2><p class="lead">Sample screens with made-up data, so you can see how each role works day to day.</p>
-<div class="tabs" role="tablist" aria-label="Sample dashboards">
-<button role="tab" aria-selected="true" data-t="co">Company</button><button role="tab" aria-selected="false" data-t="ad">Runserv finance</button><button role="tab" aria-selected="false" data-t="fl">Fleet</button></div>
-<div class="dash"><div class="bar"><i></i><i></i><i></i><span style="margin-left:8px" id="url">business.runserv.example / billing</span></div>
-<div class="body" id="panel"></div></div>
-<p class="note">Sample data only. Names, amounts and references are illustrative.</p>
-</div></section>
-
-<section class="soft" id="demo"><div class="wrap">
-<h2>Request a demo</h2><p class="lead">Tell us a little about you and we will reply within one working day.</p>
+<section id="contact"><div class="wrap"><h2>Talk to us</h2><p class="lead">Request a demo or ask a question. We reply within one working day.</p>
+<div class="contact">
 <form id="f" novalidate>
-<label>Your name<input name="name" required maxlength="120" autocomplete="name"></label>
-<label>Work email<input name="email" type="email" required autocomplete="email"></label>
-<label>Phone (optional)<input name="phone" type="tel" autocomplete="tel"></label>
-<label>Organisation (optional)<input name="organisation" maxlength="160" autocomplete="organization"></label>
-<label>I’m interested in<select name="interest"><option value="CORPORATE">Corporate accounts</option><option value="FLEET">Fleet management</option><option value="BANK_PARTNERSHIP">Bank partnership</option><option value="RIDES">Rides</option><option value="DELIVERIES">Deliveries</option><option value="OTHER">Something else</option></select></label>
-<label>Anything we should know? (optional)<textarea name="message" rows="3" maxlength="1500"></textarea></label>
+<fieldset class="chips"><legend>I’m interested in</legend>
+<label><input type="radio" name="interest" value="CORPORATE" checked><span>Company accounts</span></label><label><input type="radio" name="interest" value="FLEET"><span>Fleet</span></label><label><input type="radio" name="interest" value="BANK_PARTNERSHIP"><span>Bank partnership</span></label><label><input type="radio" name="interest" value="RIDES"><span>Rides</span></label><label><input type="radio" name="interest" value="DELIVERIES"><span>Deliveries</span></label><label><input type="radio" name="interest" value="OTHER"><span>Something else</span></label></fieldset>
+<label class="f">Your name<input name="name" required maxlength="120" autocomplete="name"></label>
+<label class="f">Work email<input name="email" type="email" required autocomplete="email"></label>
+<label class="f">Phone (optional)<input name="phone" type="tel" autocomplete="tel" placeholder="+234…"></label>
+<label class="f">Organisation (optional)<input name="organisation" maxlength="160" autocomplete="organization"></label>
+<label class="f">How can we help? (optional)<textarea name="message" rows="3" maxlength="1500"></textarea></label>
 <div class="hp" aria-hidden="true"><label>Website<input name="website" tabindex="-1" autocomplete="off"></label></div>
+<label class="chk"><input type="checkbox" name="consent" required><span>I agree that Runserv may use these details to reply to me, as described in the <a href="#privacy">privacy notice</a>.</span></label>
 <div><button class="btn" type="submit" id="go">Send request</button></div>
-<p id="msg" role="status"></p>
-</form></div></section>
+<p id="msg" role="status" tabindex="-1"></p></form>
+<aside class="side"><div class="card"><h3>Prefer to write?</h3><p>Email works too.</p>
+<div style="margin-top:10px"><a class="l" href="mailto:support@runserv.org"><span>support@runserv.org</span><span>→</span></a><a class="l" id="wa" href="#" hidden><span>WhatsApp</span><span>→</span></a><a class="l" id="tel" href="#" hidden><span>Call us</span><span>→</span></a><button class="btn alt sm" id="copy" type="button" style="margin-top:10px">Copy email address</button></div></div>
+<div class="card" id="apps" hidden><h3>Get the apps</h3><div id="applinks"></div></div></aside>
+</div></div></section>
 </main>
 
-<footer><div class="wrap">© <span id="y"></span> Runserv. All rights reserved.</div></footer>
+<article class="legal" id="privacy"><a href="#top">← Back</a><h1>Privacy notice</h1><p><i>Draft for this website. Have a Nigerian data-protection adviser review it before relying on it.</i></p>
+<h2>What we collect</h2><p>When you use the contact form: your name, email, optional phone and organisation, your interest, and your message. We also store a one-way hash of your network address to limit spam.</p>
+<h2>Why</h2><p>To reply to your request and arrange a demo. We do not sell this information or use it for advertising.</p>
+<h2>Who sees it</h2><p>Runserv staff who handle enquiries, and the email and hosting providers that deliver the service for us.</p>
+<h2>Your rights</h2><p>You can ask us to access, correct or delete your details at <a href="mailto:privacy@runserv.org">privacy@runserv.org</a>.</p><p><a href="#terms">Website terms</a></p></article>
+<article class="legal" id="terms"><a href="#top">← Back</a><h1>Website terms</h1><p><i>Draft. Have counsel review before relying on it.</i></p>
+<h2>Use of this site</h2><p>This website is for information about Runserv. Use of the Runserv apps and portals is governed by the terms shown there.</p>
+<h2>Sample screens</h2><p>Screens, names and figures on this site are illustrative and are not offers or guarantees.</p>
+<h2>Contact</h2><p><a href="mailto:support@runserv.org">support@runserv.org</a></p><p><a href="#privacy">Privacy notice</a></p></article>
+
+<footer><div class="wrap"><span>© <span id="y"></span> Runserv. All rights reserved.</span><span><a href="#privacy">Privacy</a><a href="#terms">Terms</a><a href="mailto:support@runserv.org">support@runserv.org</a></span></div></footer>
 
 <script>
-// Set this to your API origin, e.g. "https://api.runserv.com". The form posts to {API}/api/public/demo-requests.
-var API = "";
-var DATA = {
- co:{u:"business.runserv.example / billing",h:'<div class="kpis"><div class="kpi"><small>Wallet balance</small><b>₦1,250,000</b></div><div class="kpi"><small>Open invoices</small><b>2</b></div><div class="kpi"><small>This month’s trips</small><b>184</b></div></div><table><tr><th>Pay into</th><th>Account</th><th>Your reference</th></tr><tr><td>Wema Bank</td><td>•••• 1234</td><td><b>RSC-7F3A9B21</b> (wallet)</td></tr><tr><td>Fidelity Bank</td><td>•••• 5678</td><td><b>RSI-0C44D9E2</b> (invoice 2026-10)</td></tr><tr><td>First Bank</td><td>•••• 9012</td><td>Same references work here</td></tr></table>'},
- ad:{u:"admin.runserv.example / banks / receipts",h:'<div class="kpis"><div class="kpi"><small>Received this month</small><b>₦38.4M</b></div><div class="kpi"><small>Waiting for review</small><b>3</b></div><div class="kpi"><small>Unmatched</small><b>1</b></div></div><table><tr><th>Bank account</th><th>Received</th><th>Status</th></tr><tr><td>Wema •••• 1234</td><td>₦21.0M</td><td><span class="pill ok">Matched</span></td></tr><tr><td>Fidelity •••• 5678</td><td>₦12.9M</td><td><span class="pill ok">Matched</span></td></tr><tr><td>First Bank •••• 9012</td><td>₦4.5M</td><td><span class="pill wait">1 awaiting second approver</span></td></tr></table>'},
- fl:{u:"fleet.runserv.example / overview",h:'<div class="kpis"><div class="kpi"><small>Vehicles</small><b>24</b></div><div class="kpi"><small>Active drivers</small><b>21</b></div><div class="kpi"><small>Documents expiring (30 days)</small><b>4</b></div></div><table><tr><th>Vehicle</th><th>Driver</th><th>Documents</th></tr><tr><td>Toyota Corolla · LA-123-XY</td><td>A. Bello</td><td><span class="pill ok">Valid</span></td></tr><tr><td>Hyundai Elantra · AB-456-CD</td><td>C. Okoro</td><td><span class="pill wait">Insurance in 12 days</span></td></tr></table>'}
-};
-var panel=document.getElementById("panel"),url=document.getElementById("url");
-function show(k){panel.innerHTML=DATA[k].h;url.textContent=DATA[k].u}
-document.querySelectorAll(".tabs button").forEach(function(b){b.addEventListener("click",function(){document.querySelectorAll(".tabs button").forEach(function(x){x.setAttribute("aria-selected",x===b)});show(b.dataset.t)})});
-show("co");document.getElementById("y").textContent=new Date().getFullYear();
-var f=document.getElementById("f"),msg=document.getElementById("msg"),go=document.getElementById("go");
-f.addEventListener("submit",function(e){e.preventDefault();msg.className="";msg.textContent="";
- var d=Object.fromEntries(new FormData(f).entries());
- if(!d.name||d.name.trim().length<2||!/^\S+@\S+\.\S+$/.test(d.email||"")){msg.className="err";msg.textContent="Please enter your name and a valid email.";return}
- go.disabled=true;go.textContent="Sending…";
- fetch(API+"/api/public/demo-requests",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)})
-  .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.message||"Something went wrong")})})
-  .then(function(){f.reset();msg.className="ok";msg.textContent="Thank you. We will be in touch within one working day."})
-  .catch(function(){msg.className="err";msg.textContent="We couldn’t send that just now. Please email us instead."})
-  .finally(function(){go.disabled=false;go.textContent="Send request"})});
+// ── Settings: edit these. Empty values are hidden. ──
+var CFG={api:"https://api.runserv.org",whatsapp:"",phone:"",iosCustomer:"",androidCustomer:"",iosDriver:"",androidDriver:""};
+var $=function(s){return document.querySelector(s)},$$=function(s){return document.querySelectorAll(s)};
+var ROLES={
+co:{h:"Move your people and parcels. Pay once a month.",s:"Staff book rides and deliveries on the company. You set budgets and approval rules, and get one clear invoice.",c:"Request a company demo",i:"CORPORATE"},
+fl:{h:"Put your vehicles to work. See every naira.",s:"Register cars and drivers, keep documents valid, and see each trip, our fee and your net in one place.",c:"Talk to us about fleets",i:"FLEET"},
+dr:{h:"Drive. Get paid clearly.",s:"Accept company and personal trips, see earnings per job and withdraw to a bank or mobile-money account.",c:"Ask about driving with Runserv",i:"RIDES"},
+bk:{h:"Reach customers. Settle with a clean trail.",s:"Run reviewed campaigns and have each payment matched to the right invoice, with a second person approving manual entries.",c:"Discuss a bank partnership",i:"BANK_PARTNERSHIP"}};
+function role(k){var r=ROLES[k];$("#h").textContent=r.h;$("#sub").textContent=r.s;$("#cta").textContent=r.c;$("#cta").dataset.i=r.i;
+ $$(".roles button").forEach(function(b){b.setAttribute("aria-pressed",b.dataset.r===k)})}
+$$(".roles button").forEach(function(b){b.onclick=function(){role(b.dataset.r)}});
+$("#cta").onclick=function(){var v=this.dataset.i,e=document.querySelector('input[name=interest][value='+v+']');if(e)e.checked=true};
+role("co");
+var DATA={
+co:{u:"your-company.business.runserv.org / billing",h:'<div class="kpis"><div class="kpi"><small>Wallet balance</small><b>₦1,250,000</b></div><div class="kpi"><small>Open invoices</small><b>2</b></div><div class="kpi"><small>Trips this month</small><b>184</b></div></div><table><tr><th>Pay into</th><th>Account</th><th>Your reference</th></tr><tr><td>Bank A</td><td>•••• 1234</td><td><b>RSC-7F3A9B21</b> (wallet)</td></tr><tr><td>Bank B</td><td>•••• 5678</td><td><b>RSI-0C44D9E2</b> (invoice)</td></tr></table>'},
+fl:{u:"your-fleet / overview",h:'<div class="kpis"><div class="kpi"><small>Vehicles</small><b>24</b></div><div class="kpi"><small>Active drivers</small><b>21</b></div><div class="kpi"><small>Documents expiring (30 days)</small><b>4</b></div></div><table><tr><th>Vehicle</th><th>Driver</th><th>Documents</th></tr><tr><td>Toyota Corolla · LA-123-XY</td><td>A. Bello</td><td><span class="pill ok">Valid</span></td></tr><tr><td>Hyundai Elantra · AB-456-CD</td><td>C. Okoro</td><td><span class="pill wait">Insurance in 12 days</span></td></tr></table>'},
+fi:{u:"payments / receipts",h:'<div class="kpis"><div class="kpi"><small>Received this month</small><b>₦38.4M</b></div><div class="kpi"><small>Waiting for review</small><b>3</b></div><div class="kpi"><small>Unmatched</small><b>1</b></div></div><table><tr><th>Bank account</th><th>Received</th><th>Status</th></tr><tr><td>Bank A •••• 1234</td><td>₦21.0M</td><td><span class="pill ok">Matched</span></td></tr><tr><td>Bank B •••• 5678</td><td>₦4.5M</td><td><span class="pill wait">Awaiting second approver</span></td></tr></table>'}};
+function show(k){$("#panel").innerHTML=DATA[k].h;$("#panel").setAttribute("aria-labelledby","t-"+k);$("#url").textContent=DATA[k].u;
+ $$(".tabs button").forEach(function(b){var on=b.dataset.t===k;b.setAttribute("aria-selected",on);b.tabIndex=on?0:-1})}
+var tabs=[].slice.call($$(".tabs button"));
+tabs.forEach(function(b,i){b.onclick=function(){show(b.dataset.t)};b.onkeydown=function(e){var n=e.key==="ArrowRight"?i+1:e.key==="ArrowLeft"?i-1:-1;if(n<0)return;n=(n+tabs.length)%tabs.length;tabs[n].focus();show(tabs[n].dataset.t);e.preventDefault()}});
+show("co");$("#y").textContent=new Date().getFullYear();
+// nav + theme
+$("#menu").onclick=function(){var o=$("#nav").classList.toggle("open");this.setAttribute("aria-expanded",o)};
+$$("#nav a").forEach(function(a){a.onclick=function(){$("#nav").classList.remove("open")}});
+var root=document.documentElement,saved=null;try{saved=localStorage.getItem("theme")}catch(e){}
+root.dataset.theme=saved||(matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");
+$("#theme").onclick=function(){var t=root.dataset.theme==="dark"?"light":"dark";root.dataset.theme=t;try{localStorage.setItem("theme",t)}catch(e){}};
+// legal pages as hash views
+function view(){var h=location.hash.slice(1),lg=h==="privacy"||h==="terms";document.body.classList.toggle("lg",lg);
+ $$(".legal").forEach(function(a){a.classList.toggle("on",a.id===h)});if(lg)scrollTo(0,0)}
+addEventListener("hashchange",view);view();
+// contact options from CFG
+if(CFG.whatsapp){var w=$("#wa");w.href="https://wa.me/"+CFG.whatsapp.replace(/\D/g,"");w.hidden=false}
+if(CFG.phone){var t=$("#tel");t.href="tel:"+CFG.phone.replace(/\s/g,"");t.querySelector("span").textContent="Call "+CFG.phone;t.hidden=false}
+var L=[["App Store (Runserv)",CFG.iosCustomer],["Google Play (Runserv)",CFG.androidCustomer],["App Store (Driver)",CFG.iosDriver],["Google Play (Driver)",CFG.androidDriver]].filter(function(x){return x[1]});
+if(L.length){$("#apps").hidden=false;$("#applinks").innerHTML=L.map(function(x){return '<a class="l" href="'+x[1]+'"><span>'+x[0]+'</span><span>→</span></a>'}).join("")}
+$("#copy").onclick=function(){var b=this;(navigator.clipboard?navigator.clipboard.writeText("support@runserv.org"):Promise.reject()).then(function(){b.textContent="Copied"},function(){b.textContent="support@runserv.org"})};
+// form
+var f=$("#f"),msg=$("#msg"),go=$("#go");
+function say(c,t){msg.className=c;msg.textContent=t;msg.focus()}
+f.addEventListener("submit",function(e){e.preventDefault();var d=Object.fromEntries(new FormData(f).entries());
+ if(!d.name||d.name.trim().length<2)return say("err","Please enter your name.");
+ if(!/^\S+@\S+\.\S+$/.test(d.email||""))return say("err","Please enter a valid email address.");
+ if(d.phone&&d.phone.replace(/\D/g,"").length<6)return say("err","That phone number looks too short. Leave it blank if you prefer.");
+ if(!d.consent)return say("err","Please tick the box so we can reply to you.");
+ delete d.consent;go.disabled=true;go.textContent="Sending…";say("","");
+ var ctl=new AbortController(),tm=setTimeout(function(){ctl.abort()},15000);
+ fetch(CFG.api+"/api/public/demo-requests",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d),signal:ctl.signal})
+ .then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(!r.ok){var er=new Error(j.message||"");er.status=r.status;throw er}})})
+ .then(function(){f.reset();say("ok","Thank you. We will be in touch within one working day.")})
+ .catch(function(er){if(er.status===429||(er.status&&er.status<500&&er.message))return say("err",er.message||"Too many requests. Please try again later.");
+  var b=encodeURIComponent("Name: "+d.name+"\nOrganisation: "+(d.organisation||"")+"\nInterest: "+d.interest+"\n\n"+(d.message||""));
+  msg.className="err";msg.innerHTML='We couldn’t send that just now. <a href="mailto:support@runserv.org?subject=Demo%20request&body='+b+'">Email us instead</a>.';msg.focus()})
+ .finally(function(){clearTimeout(tm);go.disabled=false;go.textContent="Send request"})});
 </script>
 </body></html>

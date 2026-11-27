@@ -3,7 +3,9 @@ import React, { useEffect, useCallback, useState } from 'react';
 import { startMapConfig } from './src/services/mapConfig';
 import { Platform, View, StyleSheet, AppState } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
+import * as Notifications from 'expo-notifications';
+import { setupNotificationListeners } from './src/utils/notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider }     from './src/context/AuthContext';
@@ -23,9 +25,20 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 // ── Inner shell — has access to ThemeContext ──────────────────────────────────
 function AppShell({ onLayout }) {
   const { theme, mode } = useTheme();
+  const navRef = useNavigationContainerRef();
+
+  // Foreground alerts, token refresh and tap-to-open. On a cold start the signed-in screens may not be mounted yet, so retry briefly.
+  useEffect(() => setupNotificationListeners((name, params) => {
+    let tries = 0;
+    const go = () => {
+      if (navRef.isReady()) { try { navRef.navigate(name, params); return; } catch { /* retry */ } }
+      if (++tries < 10) setTimeout(go, 500);
+    };
+    go();
+  }), [navRef]);
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navRef}>
       <View
         style={[styles.root, { backgroundColor: theme.background }]}
         onLayout={onLayout}
@@ -46,6 +59,10 @@ export default function App() {
       try {
         await initI18n();
         startMapConfig(); // M14: map provider settings (non-blocking)
+        // Android notification channel; the backend sends to PUSH_ANDROID_CHANNEL_ID (default runserv_default).
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('runserv_default', { name: 'Runserv', importance: Notifications.AndroidImportance.HIGH }).catch(() => {});
+        }
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (e) {
         console.warn('[App] prepare error:', e);

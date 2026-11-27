@@ -18,7 +18,7 @@ const fs = require('fs');
 const IS_EAS = !!process.env.EAS_BUILD;   // set by EAS Build; local runs may legitimately lack native config files
 const V = {
   customer: { name: 'Runserv', slug: 'runserv', scheme: 'runserv', id: 'org.runserv.app',
-              projectId: 'da8a9bc7-41c1-44d2-8d1d-a52b0dc46fb7',
+              projectId: '0e4285b5-e63d-4511-84a2-254e4032880e',
               // Firebase config: prefer EAS "file" environment variables (injected at build time, never committed); fall back to a local file.
               gIos: process.env.GOOGLE_SERVICES_PLIST || './GoogleService-Info.plist', gAndroid: process.env.GOOGLE_SERVICES_JSON || './google-services.json' },
   driver:   { name: 'Runserv Driver', slug: 'runserv-driver', scheme: 'runserv-driver', id: 'org.runserv.driver',
@@ -70,6 +70,10 @@ module.exports = {
       ],
       // MapLibre v11 native module (rebuild the dev client / EAS build after adding it; Expo Go cannot load it)
       '@maplibre/maplibre-react-native',
+      '@react-native-community/datetimepicker',
+      '@react-native-firebase/app',
+      '@react-native-firebase/messaging',
+      ['expo-build-properties', { ios: { useFrameworks: 'static', forceStaticLinking: ['RNFBApp', 'RNFBMessaging'] } }],
       [
         'expo-secure-store',
       ],
@@ -89,6 +93,7 @@ module.exports = {
       supportsTablet:   true,
       bundleIdentifier: V.id,
       googleServicesFile: V.gIos,
+      entitlements: { 'aps-environment': 'production' },
       infoPlist: {
         NSLocationWhenInUseUsageDescription:
           'Runserv needs your location to find nearby drivers and show your position on the map.',
@@ -108,7 +113,7 @@ module.exports = {
       },
       package:     V.id,
       googleServicesFile: V.gAndroid,
-      permissions: ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION'],
+      permissions: ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'POST_NOTIFICATIONS'],
       config: {
         googleMaps: {
           apiKey: ANDROID_KEY,

@@ -2,7 +2,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-const PRODUCTION_URL = 'https://runserv.onrender.com/api';
+const PRODUCTION_URL = 'https://api.runserv.org/api';
 
 const NATIVE_URL =
   Constants.expoConfig?.extra?.apiUrl      // ← this is set by app.config.js correctly

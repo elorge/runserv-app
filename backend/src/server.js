@@ -37,7 +37,10 @@ const io = new Server(server, {
       ].filter(Boolean);
 
       if (allowed.includes(origin)) return callback(null, true);
-      callback(new Error(`Socket CORS blocked: ${origin}`));
+      // White-label portals (<slug>.business.runserv.org and organisations' own domains), same rule as REST CORS in app.js
+      require('./utils/brandHosts').isPortalOrigin(origin)
+        .then((ok) => (ok ? callback(null, true) : callback(new Error(`Socket CORS blocked: ${origin}`))))
+        .catch(() => callback(new Error(`Socket CORS blocked: ${origin}`)));
     },
     methods: ['GET', 'POST'],
     credentials: true,

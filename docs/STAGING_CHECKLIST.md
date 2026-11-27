@@ -44,17 +44,3 @@ Tick each line with the date and who ran it. Nothing here has been run yet.
 
 ## G. Before pilot
 Backup restore test, monitoring/alerts, penetration test, admin MFA, private expiring document links, legal sign-offs (see pending-work document).
-
-
-## Z. Guest booking, proof of delivery (M15). NOTHING BELOW HAS BEEN RUN.
-Setup: apply `backend/prisma/sql/m15_guest_booking.sql` (or `prisma migrate`), `prisma generate`, set `GUEST_PLANNING_ENABLED=true`, `GUEST_BOOKING_ENABLED=true`, `ENABLE_SMS_DELIVERY=true` + `TERMII_API_KEY`, `GUEST_HASH_SECRET` (>= 32 random chars, different from JWT_SECRET), `GUEST_TRACKING_BASE_URL`, `ENABLED_VEHICLE_CATEGORIES=<pilot category only>`.
-- [ ] Migration applies on a COPY of the live DB; `\d "GuestBooking"` shows both FKs and the one-target CHECK; RLS on for all 5 new tables.
-- [ ] OTP: real SMS arrives; wrong code x5 locks; resend inside 60 s refused; 6th send in an hour refused; expired code refused.
-- [ ] A number owned by a registered account is refused (409). A guest number cannot sign in by password and gets 403 on any Bearer route.
-- [ ] Quote -> confirm: a booking is created once; double-tap and airplane-mode retry (same Idempotency-Key) return ONE ride; a changed pickup after quoting is refused; a quote older than 10 min is refused.
-- [ ] Dispatch: the driver app receives the guest ride; the courier app receives the parcel WITHOUT phone numbers; after accept, normal flow completes in CASH.
-- [ ] Tracking link: opens without login, shows no phone/email; rotate kills the old link; revoke works; link expires after 24 h; unknown token == same 404 as expired.
-- [ ] Parcel: recipient SMS has the code; courier cannot complete without it; 5 wrong codes lock; support override works and is in the audit log; failed delivery -> returning -> returned.
-- [ ] Admin: /api/admin/guest-bookings list, detail (fare trace, quote expiry, audit), lookup (reference + phone), abuse summary, block/unblock.
-- [ ] Conversion: guest -> account keeps past bookings; the same number then cannot be used as a guest again.
-- [ ] Rate limits fire and appear in the abuse summary. Rollback drill: set GUEST_BOOKING_ENABLED=false -> all /api/guest/otp|bookings|track return 404 and existing authenticated flows are unaffected.
